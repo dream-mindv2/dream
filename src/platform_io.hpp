@@ -135,6 +135,9 @@ inline Count write(int fd, const void* data, size_t size) {
     int result = ::send(socket, static_cast<const char*>(data), n, 0);
     return result == SOCKET_ERROR ? socket_error() : result;
 }
+/// A write to a descriptor known to be a socket. Windows raises no signal for
+/// a peer that has gone, so this is `write`.
+inline Count send(int fd, const void* data, size_t size) { return write(fd, data, size); }
 inline bool nonblocking(int fd) {
     SOCKET socket = socket_of(fd);
     if (socket == INVALID_SOCKET) return true;
@@ -202,6 +205,20 @@ using ::read; using ::write; using ::bind; using ::listen;
 using ::connect; using ::setsockopt; using ::getsockopt;
 using ::getpeername; using ::getsockname; using ::shutdown;
 inline bool init() { return true; }
+/// A write to a descriptor known to be a socket. `write(2)` to a socket whose
+/// peer has closed raises SIGPIPE, and the default action ends the whole VM
+/// -- every process in it -- because one client hung up mid-response, which
+/// any client of a server can arrange. Linux has no SO_NOSIGPIPE to set at
+/// creation (macOS does, and `socket`/`accept` below set it), so the flag
+/// goes on each send instead, and the write fails with EPIPE like any other.
+/// SIGPIPE itself is left alone: `dream prog | head` should still end quietly.
+inline Count send(int fd, const void* data, size_t size) {
+#ifdef MSG_NOSIGNAL
+    return ::send(fd, data, size, MSG_NOSIGNAL);
+#else
+    return ::write(fd, data, size);
+#endif
+}
 inline bool is_terminal(int fd) { return ::isatty(fd) != 0; }
 inline bool enable_ansi(int fd) { return is_terminal(fd); }
 inline bool nonblocking(int fd) {

@@ -141,6 +141,10 @@ struct Handle {
     /// Closing a descriptor the VM does not own would be rude, and closing
     /// stdin twice would be worse.
     bool owned = true;
+    /// A socket the VM opened or accepted, written with `sys::send` so that a
+    /// peer that has gone is an EPIPE and not a SIGPIPE. Pipes and terminals
+    /// are `Stream`s too, and `send` would refuse them.
+    bool socket = false;
     /// How many operations are in flight on this handle right now.
     ///
     /// Operations release the table lock before their syscall -- holding it
@@ -166,7 +170,7 @@ public:
     }
 
     /// Take ownership of `fd` and return the id that addresses it.
-    int64_t add(int fd, HandleKind kind, bool owned = true) {
+    int64_t add(int fd, HandleKind kind, bool owned = true, bool socket = false) {
         std::lock_guard<std::mutex> g(mutex_);
         size_t i = 0;
         for (; i < slots_.size(); ++i) {
@@ -179,6 +183,7 @@ public:
         h.open = true;
         h.connecting = false;
         h.owned = owned;
+        h.socket = socket;
         h.tls.reset();
         ++h.generation;
         return int64_t((uint64_t(h.generation) << HANDLE_INDEX_BITS) | uint64_t(i));
@@ -201,13 +206,14 @@ public:
 
     /// Resolve `id` and mark an operation in flight. Returns false when the id
     /// is stale, closed, or was never issued.
-    bool acquire(int64_t id, int* fd, HandleKind* kind, std::shared_ptr<TlsSession>* tls) {
+    bool acquire(int64_t id, int* fd, HandleKind* kind, bool* socket, std::shared_ptr<TlsSession>* tls) {
         std::lock_guard<std::mutex> g(mutex_);
         Handle* h = find(id);
         if (!h) return false;
         ++h->busy;
         *fd = h->fd;
         *kind = h->kind;
+        *socket = h->socket;
         *tls = h->tls;
         return true;
     }
@@ -295,7 +301,7 @@ public:
         Value h = resolve(v);
         if (!is_fixnum(h)) return false;
         id_ = fixnum_value(h);
-        ok_ = HandleTable::get().acquire(id_, &fd_, &kind_, &tls_);
+        ok_ = HandleTable::get().acquire(id_, &fd_, &kind_, &socket_, &tls_);
         return ok_;
     }
 
@@ -304,6 +310,7 @@ public:
 
     int fd() const { return fd_; }
     HandleKind kind() const { return kind_; }
+    bool socket() const { return socket_; }
     int64_t id() const { return id_; }
     /// A regular file is always "ready" to `epoll`, so waiting on one is
     /// meaningless and its calls are issued directly.
@@ -313,6 +320,7 @@ private:
     int64_t id_ = -1;
     int fd_ = -1;
     HandleKind kind_ = HandleKind::File;
+    bool socket_ = false;
     bool ok_ = false;
     std::shared_ptr<TlsSession> tls_;
 };
@@ -664,7 +672,7 @@ enum class Pump { Done, Again, Eof, Failed };
 /// Write the session's pending records. `Again` when the socket is full.
 Pump flush_tls(TlsSession& s, int fd, int* err) {
     while (!s.out.empty()) {
-        sys::Count n = sys::write(fd, s.out.data(), s.out.size());
+        sys::Count n = sys::send(fd, s.out.data(), s.out.size());
         if (n > 0) {
             s.out.erase(0, size_t(n));
             continue;
@@ -872,7 +880,8 @@ NativeResult io_write(Process& p, Value, Value* args, uint32_t) {
         // larger than memory costs no memory to write. `write` takes a size_t
         // and answers how much it took, and a short write is the caller's loop
         // either way, so nothing here has to know which kind it was handed.
-        sys::Count put = sys::write(h.fd(), str.data, size_t(str.len));
+        sys::Count put = h.socket() ? sys::send(h.fd(), str.data, size_t(str.len))
+                                    : sys::write(h.fd(), str.data, size_t(str.len));
         if (put >= 0) return NativeResult::ok(make_fixnum(int64_t(put)));
         if (errno == EINTR) continue;
         if ((errno == EAGAIN || errno == EWOULDBLOCK) && h.pollable()) {
@@ -1478,7 +1487,7 @@ NativeResult net_accept(Process& p, Value, Value* args, uint32_t) {
             // Small writes should go out now, not wait for more to accumulate.
             sys::setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &on, sizeof on);
             return NativeResult::ok(
-                make_fixnum(HandleTable::get().add(client, HandleKind::Stream)));
+                make_fixnum(HandleTable::get().add(client, HandleKind::Stream, true, true)));
         }
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) return wait_for(p, h.fd(), false);
@@ -1533,7 +1542,7 @@ NativeResult net_connect(Process& p, Value, Value* args, uint32_t) {
     if (rc == 0) {
         int on = 1;
         sys::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof on);
-        return NativeResult::ok(make_fixnum(HandleTable::get().add(fd, HandleKind::Stream)));
+        return NativeResult::ok(make_fixnum(HandleTable::get().add(fd, HandleKind::Stream, true, true)));
     }
     if (e != EINPROGRESS && e != EINTR) {
         sys::close(fd);
@@ -1543,7 +1552,7 @@ NativeResult net_connect(Process& p, Value, Value* args, uint32_t) {
     // In flight. Hand back a handle so the retry has somewhere to keep state,
     // and wait for the socket to become writable, which is how the kernel
     // reports that the attempt has finished one way or the other.
-    int64_t id = HandleTable::get().add(fd, HandleKind::Stream);
+    int64_t id = HandleTable::get().add(fd, HandleKind::Stream, true, true);
     {
         std::lock_guard<std::mutex> g(HandleTable::get().mutex());
         if (Handle* h = HandleTable::get().find(id)) h->connecting = true;

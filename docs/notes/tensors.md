@@ -563,7 +563,7 @@ into GPU products on either side and in the one-column kernel, the GPU
 
 ## What machine learning needed
 
-`std.ml` (see [ml.md](https://github.com/Custards1/dream/blob/main/docs/notes/ml.md)) is written on `std.tensor` and nothing else,
+`std.ml` (see [ml.md](https://github.com/dream-mindv2/std/blob/main/docs/notes/ml.md)) is written on `std.tensor` and nothing else,
 and it found the operators and the handful of functions above short of
 what a network's forward and backward passes are made of. What was added, and
 the shape each took:

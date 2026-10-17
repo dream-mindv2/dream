@@ -291,14 +291,14 @@ the interpreter resumes it at the top of the body.
 Type signatures reach the JIT as hints: an integer signature favors the
 fixnum fast paths, and a float one can select guarded unboxed doubles.
 `--dump-jit FN` prints the IR. Against CPython, on the workloads in
-[`benchmark/`](../benchmark/README.md), compiled numeric and list loops are
+[`benchmark/`](https://github.com/Custards1/dream/blob/main/benchmark/README.md), compiled numeric and list loops are
 several times faster; [docs/notes/vm-performance.md](docs/notes/vm-performance.md)
 is the record of how, and of what was tried and not kept.
 
 ## Native modules
 
 The parts of the standard library that must touch the machine are here, in
-C++, and everything else in [`mind/std`](../mind/std/README.md) is Dream
+C++, and everything else in [`mind/std`](https://github.com/dream-mindv2/std/blob/main/README.md) is Dream
 written on top of them. [docs/builtins.md](docs/builtins.md) is the
 reference.
 

@@ -1,6 +1,6 @@
 # Self-compilation below 1.25 seconds
 
-Current compiler work: [macro expansion performance TODO](../dreams/TODO.md).
+Current compiler work: [macro expansion performance TODO](https://github.com/dream-mindv2/dreams/blob/main/TODO.md).
 It records the 2026-09-20 baseline and the plan to remove whole-program macro
 snapshots, including an incremental compile-time VM option. The measurements
 below are historical and predate that baseline.

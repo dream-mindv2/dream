@@ -264,7 +264,7 @@ console.warn! "Using the default configuration"
 | `log! level value`, `info! value`, `warn! value` | labeled stderr logging |
 | `logf! level template values` | formatted logging |
 
-See [Console](https://github.com/Custards1/dream/blob/main/docs/console.md) for stream injection, line limits, colors and logger
+See [Console](https://github.com/dream-mindv2/std/blob/main/docs/console.md) for stream injection, line limits, colors and logger
 configuration. Prompts use stderr by default so stdout can carry program results.
 
 ---
@@ -1577,7 +1577,7 @@ JSON, and atoms as their names; each dialect validates parameter kinds.
 `std.sql.pg.db` connection. It preserves SQLSTATE as `:state` and the original error as
 `:cause`, returns `bytea` as blobs, streams through portals, and prepares each
 run of equal SQL once for `exec_many!`. Use `RETURNING` for generated keys;
-PostgreSQL outcomes have `:last_id` set to `()`. See [pg](https://github.com/Custards1/dream/blob/main/mind/std/src/sql/pg/README.md).
+PostgreSQL outcomes have `:last_id` set to `()`. See [pg](https://github.com/dream-mindv2/std/blob/main/src/sql/pg/README.md).
 
 `std.sql.sqlite` is the SQLite driver. It binds the system's
 libsqlite3 through `std.foreign` as `from system "sqlite3" "0"`, which searches

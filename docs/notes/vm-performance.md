@@ -615,7 +615,7 @@ let main! = { console.print! (loop_f (fn a b -> a + b) 1 10000000 0) };
 
 `acc` is lazy, so this builds ten million suspended applications rather than
 adding anything -- the trap `list.fold_strict` exists to avoid, and its note in
-[mind/std/src/list.dr](https://github.com/Custards1/dream/blob/main/mind/std/src/list.dr) explains it. Forcing that chain is supposed
+[mind/std/src/list.dr](https://github.com/dream-mindv2/std/blob/main/src/list.dr) explains it. Forcing that chain is supposed
 to raise at `DREAM_MAX_DEPTH`, and with `--no-jit` it always did, exactly:
 
 ```

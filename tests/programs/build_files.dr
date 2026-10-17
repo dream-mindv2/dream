@@ -1,5 +1,5 @@
 // What a build asks of the file system: stamps, digests, links, copies and
-// trees. See "Running a plan" in docs/build.md for why each one is a native.
+// trees. See "Running a plan" in mind/std/docs/build.md for why each one is a native.
 import std.console;
 import std.error;
 import std.io;

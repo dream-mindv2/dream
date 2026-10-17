@@ -38,7 +38,7 @@ aligned. The sentinel `0xFFFFFFFF` (`NO_NODE`) marks an absent edge.
 | 10     | 2    | `version_minor` | `1`; a higher minor is forward-compatible    |
 | 12     | 4    | `flags`         | bit 0: a `SPAN` debug section is present; bits 8-23: the target (below) |
 | 16     | 4    | `module_name`   | string-table index                           |
-| 20     | 4    | `source_name`   | string-table index; the original source path |
+| 20     | 4    | `source_name`   | string-table index; the original source path, or as `--remap-path-prefix` rewrote it |
 | 24     | 4    | `entry`         | function index of `main!`, or `NO_NODE`      |
 | 28     | 4    | `section_count` |                                              |
 
@@ -319,7 +319,7 @@ can capture its own binding before it is filled in.
 | Offset | Size | Field           | Notes |
 |-------:|-----:|-----------------|-------|
 | 0      | 4    | `name`          | `KSTR` index |
-| 4      | 4    | `source`        | `KSTR` index; the original source path |
+| 4      | 4    | `source`        | `KSTR` index; the original source path, or as `--remap-path-prefix` rewrote it |
 | 8      | 4    | `globals_start` | first global index belonging to this module |
 | 12     | 4    | `globals_count` | |
 | 16     | 4    | `flags`         | `0x01` host-provided, `0x02` declares virtuals |

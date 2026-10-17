@@ -545,6 +545,7 @@ crypto.hex (crypto.sha256 "abc")               // "ba7816bf..."
 crypto.hmac :sha256 key message                // 32 raw bytes
 crypto.pbkdf2 :sha256 password salt 600000 32  // a 32-byte key
 crypto.equal expected_mac given_mac            // constant time
+crypto.ed25519_verify public message signature // true or false
 ```
 
 | Name | Signature | Description |
@@ -560,6 +561,9 @@ crypto.equal expected_mac given_mac            // constant time
 | `hex`, `unhex` | `string → string`, `string → string\|unit` | Lowercase hex, and back (either case); `()` for text that is not hex. |
 | `base64`, `unbase64` | `string → string`, `string → string\|unit` | Padded RFC 4648 base64, and back; `()` for text that is not. |
 | `random_bytes!` | `integer → string` | That many bytes from the operating system's generator (`getrandom`, `arc4random_buf`, `BCryptGenRandom`), up to 2^24. |
+| `ed25519_public` | `seed → string` | The 32-byte Ed25519 public key of a 32-byte secret seed; `random_bytes! 32` is a new seed. Raises `:type_error` for a seed of another length. |
+| `ed25519_sign` | `seed → message → string` | The 64-byte Ed25519 signature (RFC 8032). Deterministic: one key and message always sign to the same bytes. |
+| `ed25519_verify` | `public → message → signature → bool` | Whether the signature is that key's, with RFC 8032's strict checks: a non-canonical key or an unreduced `S` is refused. Answers `false`, never raises, for a key or signature of the wrong length. |
 
 A native runs to completion on its worker, so an expensive `pbkdf2` holds that worker for as long as it takes; the iteration count is the caller's choice.
 

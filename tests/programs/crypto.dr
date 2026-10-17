@@ -1,4 +1,5 @@
-// `std.crypto`: every digest, MAC and derivation against published vectors.
+// `std.crypto`: every digest, MAC, derivation and signature against published
+// vectors.
 //
 // The inputs are chosen for the boundaries the code has: an empty message, one
 // that fills a 64-byte block to where the length no longer fits (55 and 56
@@ -69,6 +70,55 @@ let main! = {
 
     // A hash that is not one is an error that says which ones are.
     show! (to_string (try! { crypto.digest :sha3 "x" } catch e { error.kind e }))
+
+    // Ed25519: RFC 8032's first three cases. Signing is deterministic, so
+    // each signature is exact, not just one that verifies.
+    let rfc = [["9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", ""],
+               ["4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb", "72"],
+               ["c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7", "af82"]];
+    show_all! (list.flat_map (fn [seed, message] -> {
+        let key = crypto.unhex seed;
+        let m = crypto.unhex message;
+        let public = crypto.ed25519_public key;
+        let signature = crypto.ed25519_sign key m;
+        [crypto.hex public, crypto.hex signature, to_string (crypto.ed25519_verify public m signature)]
+    }) rfc)
+
+    // What verification refuses. Each of the last three verifies by the
+    // equation alone -- checked by a separate Python implementation -- so
+    // only RFC 8032's strictness rejects it: S + L, the same signature spelled
+    // a second way; the identity as a key with a sign bit on x = 0; and a key
+    // whose y is p, a second spelling of 0. The identity spelled properly is
+    // the control that the equation does hold for that signature.
+    let key2 = crypto.unhex "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c";
+    let sig2 = crypto.ed25519_sign (crypto.unhex "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb") "r";
+    let flipped = str.slice 0 10 sig2 + crypto.xor (str.slice 10 1 sig2) (str.of_bytes [1]) + str.slice 11 53 sig2;
+    let small = crypto.unhex ("93c9449be4e3975f799a691f11d3bdab8ac6348ba2afbdfb9310fdb6b32ebdd7"
+                              + "6745230100000000000000000000000000000000000000000000000000000000");
+    show! (to_string [
+        crypto.ed25519_verify key2 "r" sig2,
+        crypto.ed25519_verify key2 "s" sig2,
+        crypto.ed25519_verify key2 "r" flipped,
+        crypto.ed25519_verify key2 "r" (str.slice 0 63 sig2),
+        crypto.ed25519_verify (str.slice 0 31 key2) "r" sig2,
+        crypto.ed25519_verify (crypto.unhex "0100000000000000000000000000000000000000000000000000000000000000")
+                              "identity" small,
+    ])
+    show! (to_string [
+        crypto.ed25519_verify key2 "r"
+            (crypto.unhex ("92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da"
+                           + "f52db7415978abc61b2c2eb6aeebfca0387b2eaeb4302aeeb00d291612bb0c10")),
+        crypto.ed25519_verify (crypto.unhex "0100000000000000000000000000000000000000000000000000000000000080")
+                              "identity" small,
+        crypto.ed25519_verify (crypto.unhex "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f")
+                              "order four 7" small,
+    ])
+    // A new key is 32 random bytes; a seed of any other length is a mistake
+    // in the caller, and an error.
+    let fresh = crypto.random_bytes! 32;
+    show! (to_string (crypto.ed25519_verify (crypto.ed25519_public fresh) "m" (crypto.ed25519_sign fresh "m")))
+    show! (to_string [try! { crypto.ed25519_sign "short" "m" } catch e { error.kind e },
+                      try! { crypto.ed25519_public "short" } catch e { error.kind e }])
 
     // A file's digest is its contents', read by the VM rather than through
     // the heap: the million bytes above, from a file, under every hash.

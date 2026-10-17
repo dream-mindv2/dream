@@ -19,6 +19,12 @@
 // five digests are also members of their own, which is what a call site that
 // knows its hash wants to write.
 //
+// **Signatures are Ed25519** (ed25519.hpp), keys and signatures raw bytes like
+// everything else: a 32-byte secret seed -- `random_bytes! 32` is a new key --
+// its 32-byte public key, and 64-byte signatures. `ed25519_verify` answers
+// false, never raises, for a key or a signature of the wrong length, since
+// both arrive from outside and "not a valid signature" is the whole answer.
+//
 // **No yielding.** A native runs to completion on its worker, so a PBKDF2 of a
 // million rounds holds that worker for the second or so it takes. The caller
 // chose the count, and a login is the only thing that asks for one.
@@ -43,6 +49,7 @@
 
 #include "builtins.hpp"
 #include "digest.hpp"
+#include "ed25519.hpp"
 #include "interp.hpp"
 #include "process.hpp"
 
@@ -404,6 +411,45 @@ NativeResult crypto_random_bytes(Process& p, Value, Value* args, uint32_t) {
     return NativeResult::ok(bytes_value(p, out.data(), out.size()));
 }
 
+// --- signatures ------------------------------------------------------------------
+
+/// `ed25519_public seed`: the public key of a 32-byte secret seed.
+NativeResult crypto_ed25519_public(Process& p, Value, Value* args, uint32_t) {
+    Bytes seed;
+    if (!string_bytes(args[0], &seed) || seed.len != kEd25519Seed) {
+        return crypto_fail(p, "type_error", "ed25519_public needs a 32-byte seed");
+    }
+    uint8_t out[kEd25519Public];
+    ed25519_public(out, reinterpret_cast<const uint8_t*>(seed.data));
+    return NativeResult::ok(bytes_value(p, out, sizeof out));
+}
+
+/// `ed25519_sign seed message`: the 64-byte signature.
+NativeResult crypto_ed25519_sign(Process& p, Value, Value* args, uint32_t) {
+    Bytes seed, message;
+    if (!string_bytes(args[0], &seed) || seed.len != kEd25519Seed) {
+        return crypto_fail(p, "type_error", "ed25519_sign needs a 32-byte seed");
+    }
+    if (!string_bytes(args[1], &message)) return crypto_fail(p, "type_error", "ed25519_sign needs a message");
+    uint8_t out[kEd25519Signature];
+    ed25519_sign(out, reinterpret_cast<const uint8_t*>(seed.data),
+                 reinterpret_cast<const uint8_t*>(message.data), size_t(message.len));
+    return NativeResult::ok(bytes_value(p, out, sizeof out));
+}
+
+/// `ed25519_verify public message signature`: whether it is that key's.
+NativeResult crypto_ed25519_verify(Process& p, Value, Value* args, uint32_t) {
+    Bytes key, message, signature;
+    if (!string_bytes(args[0], &key) || !string_bytes(args[1], &message) || !string_bytes(args[2], &signature)) {
+        return crypto_fail(p, "type_error", "ed25519_verify needs a key, a message and a signature, all strings");
+    }
+    bool ok = key.len == kEd25519Public && signature.len == kEd25519Signature &&
+              ed25519_verify(reinterpret_cast<const uint8_t*>(signature.data),
+                             reinterpret_cast<const uint8_t*>(key.data),
+                             reinterpret_cast<const uint8_t*>(message.data), size_t(message.len));
+    return NativeResult::ok(make_bool(ok));
+}
+
 }  // namespace
 
 ModuleDef make_crypto_module() {
@@ -426,6 +472,9 @@ ModuleDef make_crypto_module() {
                          {"base64", 1, 0b1, crypto_base64},
                          {"unbase64", 1, 0b1, crypto_unbase64},
                          {"random_bytes!", 1, 0b1, crypto_random_bytes},
+                         {"ed25519_public", 1, 0b1, crypto_ed25519_public},
+                         {"ed25519_sign", 2, 0b11, crypto_ed25519_sign},
+                         {"ed25519_verify", 3, 0b111, crypto_ed25519_verify},
                      }};
 }
 

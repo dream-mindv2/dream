@@ -749,6 +749,7 @@ set(DREAM_SOURCES
   src/ffi.cpp
   src/io.cpp
   src/digest.cpp
+  src/ed25519.cpp
   src/crypto.cpp
   src/regex.cpp
   src/bigint.cpp

@@ -2970,6 +2970,66 @@ const Image* g_thunk_sites_image = nullptr;
 extern const bool g_probe_frames;
 extern std::atomic<uint64_t> g_frames_made, g_frame_bytes, g_frames_held, g_held_bytes;
 
+// What a suspension would carry if it held the values it reads rather than
+// its frame: the distinct slots its expression reads and does not bind
+// itself, and the closure captures it reads, worked out once per node. With
+// `DREAM_PROBE_FRAMES`, the report says what a run would allocate if frames
+// lived on a stack and suspensions copied their free values, as closures do.
+std::mutex g_flat_mutex;
+std::vector<int32_t> g_flat_free;
+const Image* g_flat_image = nullptr;
+std::atomic<uint64_t> g_flat_thunks{0}, g_flat_values{0};
+
+int32_t flat_free_count(const Image& img, uint32_t root) {
+    std::vector<uint8_t> read, bound;
+    std::vector<uint32_t> caps;
+    std::vector<uint32_t> work{root}, kids;
+    auto mark = [](std::vector<uint8_t>& v, uint32_t i) { if (v.size() <= i) v.resize(i + 1, 0); v[i] = 1; };
+    while (!work.empty()) {
+        uint32_t idx = work.back();
+        work.pop_back();
+        if (idx == NO_NODE) continue;
+        const Node& n = img.node(idx);
+        switch (Op(n.op)) {
+            case Op::Local: mark(read, n.a); break;
+            case Op::Capture: caps.push_back(n.a); break;
+            case Op::Bind: mark(bound, n.a); break;
+            case Op::MakeClosure: case Op::MakeThunk: {
+                const FuncRec& f = img.func(n.a);
+                for (uint32_t i = 0; i < f.n_captures; ++i) {
+                    uint32_t desc = img.kid(f.captures_off + i);
+                    if (desc & CAP_FROM_CAPTURE) caps.push_back(desc & ~CAP_FROM_CAPTURE);
+                    else mark(read, desc);
+                }
+                break;
+            }
+            default: break;
+        }
+        kids.clear();
+        node_children(n, img.kids_at(0), kids);
+        for (uint32_t k : kids) work.push_back(k);
+    }
+    int32_t count = 0;
+    for (uint32_t i = 0; i < read.size(); ++i)
+        if (read[i] && !(i < bound.size() && bound[i])) ++count;
+    std::sort(caps.begin(), caps.end());
+    count += int32_t(std::unique(caps.begin(), caps.end()) - caps.begin());
+    return count;
+}
+
+void note_flat_thunk(const Image& img, uint32_t node) {
+    int32_t k;
+    {
+        std::lock_guard<std::mutex> g(g_flat_mutex);
+        if (g_flat_image != &img) { g_flat_image = &img; g_flat_free.assign(img.node_count(), -1); }
+        if (node >= g_flat_free.size()) return;
+        if (g_flat_free[node] < 0) g_flat_free[node] = flat_free_count(img, node);
+        k = g_flat_free[node];
+    }
+    g_flat_thunks.fetch_add(1, std::memory_order_relaxed);
+    g_flat_values.fetch_add(uint64_t(k), std::memory_order_relaxed);
+}
+
 void dbg_dump_thunks() {
     if (g_probe_frames) {
         const uint64_t made = g_frames_made.load(), bytes = g_frame_bytes.load();
@@ -2979,6 +3039,13 @@ void dbg_dump_thunks() {
                      (unsigned long long)made, (unsigned long long)bytes, (unsigned long long)held,
                      (unsigned long long)held_bytes, (unsigned long long)(made - held),
                      (unsigned long long)(bytes - held_bytes), bytes ? 100.0 * double(bytes - held_bytes) / double(bytes) : 0.0);
+        const uint64_t thunks = g_flat_thunks.load(), values = g_flat_values.load();
+        // A flat suspension: a header, the node and a count, and a word per value.
+        const uint64_t flat = thunks * 16 + values * 8, now = thunks * 24;
+        std::fprintf(stderr, "; suspensions made by the interpreter: %llu, reading %.2f values each on average; "
+                             "as flat suspensions %llu bytes against %llu now plus every frame they hold\n",
+                     (unsigned long long)thunks, thunks ? double(values) / double(thunks) : 0.0,
+                     (unsigned long long)flat, (unsigned long long)now);
     }
     if (!g_probe_thunk) return;
     for (size_t i = 0; i < 64; ++i) {
@@ -3192,6 +3259,7 @@ Value thunk_for(Process& p, uint32_t node, Value frame) {
         }
         default: break;
     }
+    if (g_probe_frames) note_flat_thunk(img, node);
     if (g_probe_thunk) {
         g_thunk_counts[size_t(n.op) & 63].fetch_add(1, std::memory_order_relaxed);
         uint64_t func = 0xffffffffu;

@@ -58,6 +58,9 @@ struct SectionInfo {
     uint32_t kind, offset, length, count;
 };
 
+
+}  // namespace
+
 /// The node indices a node points at. Shared by the validator's two walks so
 /// they cannot disagree about what counts as a child.
 void node_children(const Node& n, const uint32_t* kids, std::vector<uint32_t>& out) {
@@ -119,8 +122,6 @@ void node_children(const Node& n, const uint32_t* kids, std::vector<uint32_t>& o
             break;
     }
 }
-
-}  // namespace
 
 const char* op_name(Op op) {
     switch (op) {

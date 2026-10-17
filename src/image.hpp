@@ -248,6 +248,10 @@ struct StringRef {
     bool equals(const char* s) const;
 };
 
+/// The node indices a node points at: what every walk of an arena agrees
+/// counts as a child.
+void node_children(const Node& n, const uint32_t* kids, std::vector<uint32_t>& out);
+
 class Image {
 public:
     struct Accessor {

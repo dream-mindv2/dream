@@ -24,6 +24,17 @@
 
 using namespace dream;
 
+// Which VM this is: a release number, and the commit it was built from when
+// the build knew it (CMake asks git at configure time). A reproduced build
+// names the VM it ran on, since the compiler's output is the compiler's and
+// the VM's together.
+#ifndef DREAM_VERSION
+#define DREAM_VERSION "0.1.0"
+#endif
+#ifndef DREAM_COMMIT
+#define DREAM_COMMIT "unknown"
+#endif
+
 namespace {
 
 const char* USAGE =
@@ -37,6 +48,7 @@ const char* USAGE =
     "binary is in, as a package installs it; or ~/.mindv2.\n"
     "\n"
     "options:\n"
+    "      --version        print which VM this is and exit\n"
     "  -x, --exec <name>    run <name>.dream from the installation, not from here\n"
     "  -e, --entry <name>   run this global instead of `main!`\n"
     "  -j, --workers <n>    scheduler threads (default: cores, capped at 8)\n"
@@ -405,6 +417,9 @@ int dream_main(int argc, char** argv) {
         };
         if (a == "-h" || a == "--help") {
             std::fputs(USAGE, stdout);
+            return 0;
+        } else if (a == "--version") {
+            std::printf("dream %s (%s)\n", DREAM_VERSION, DREAM_COMMIT);
             return 0;
         } else if (a == "-x" || a == "--exec") {
             bool ok = true;

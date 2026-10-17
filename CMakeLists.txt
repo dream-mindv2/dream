@@ -1125,6 +1125,18 @@ set_target_properties(
   PROPERTIES
   OUTPUT_NAME dream)
 
+# `dream --version` names the commit the VM was built from, asked of git when
+# the build is configured. Outside a checkout it says `unknown`.
+execute_process(
+  COMMAND git describe --always --dirty --abbrev=12
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  OUTPUT_VARIABLE DREAM_GIT_COMMIT
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET)
+if(DREAM_GIT_COMMIT)
+  target_compile_definitions(dream_cli PRIVATE DREAM_COMMIT="${DREAM_GIT_COMMIT}")
+endif()
+
 target_link_libraries(
   dream_cli
   PRIVATE

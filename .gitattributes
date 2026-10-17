@@ -1,0 +1,7 @@
+# GitHub colours only the languages Linguist knows, and Dream is not one of
+# them yet: Linguist adds a language once it is used across a couple of
+# hundred repositories. Until then `.dr` reads as Elixir, the nearest in
+# look -- atoms, `%{}` maps, `fn x ->`, `!` names -- and counts in the
+# language bar. When Dream is submitted (with the TextMate grammar in
+# vscode-dream), this becomes `linguist-language=Dream` or goes.
+*.dr linguist-language=Elixir

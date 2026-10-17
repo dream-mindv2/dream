@@ -1,0 +1,9 @@
+// Compile-time tensor values are data, including deferred and nested ones.
+import std.console;
+import std.tensor;
+let weights = comp (tensor.random 17 [64, 64] * 2.0 + 1.0);
+let nested = comp [%{"weights" => tensor.of_list [[1, 2], [3, 4]]}];
+let main! = {
+    console.print! (weights == tensor.random 17 [64, 64] * 2.0 + 1.0)
+    console.print! (nested.[0].["weights"] @ tensor.of_list [2, 3])
+};

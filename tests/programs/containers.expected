@@ -1,0 +1,17 @@
+map:        widget 3
+fallback:   :none
+changed:    [4, 3, 3, 2]
+array:      [10, 30, -1]
+array set:  [99, 20]
+list:       [1, 3, 0]
+list set:   [[1, 20, 3], [1, 2, 3]]
+nested:     3
+lazy:       7
+lazy set:   5
+unused:     widget
+infinite:   [101, 0]
+missing:    <error :no_such_key the map has no key :colour>
+outside:    <error :out_of_bounds index 3 is outside an array of 3>
+past end:   <error :out_of_bounds index 3 is past the end of a list of 3>
+not one:    <error :type_error `.[ ]` reads a map, an array or a list, not a string>
+deep chain: 300000

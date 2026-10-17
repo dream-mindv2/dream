@@ -1,0 +1,24 @@
+// Every type in the language spec must report the name the compiler's
+// types.rs table gives it. This is the cross-check between the two codebases.
+import std.console;
+import std.math;
+let show! label v = { console.print! (to_string label + (to_string (type_of v))) };
+let a_pure x = x;
+let an_impure! x = x;
+let main! = {
+    show! "integer   -> " 1
+    show! "float     -> " 1.5
+    show! "char      -> " 'c'
+    show! "bool      -> " true
+    show! "unit      -> " ()
+    show! "string    -> " "s"
+    show! "atom      -> " :sym
+    show! "list      -> " [1]
+    show! "array     -> " #[1]
+    show! "map       -> " %{ :k => 1 }
+    show! "error     -> " (try! { 1 / 0 } catch e { e })
+    show! "process   -> " (self! ())
+    show! "pure_fn   -> " a_pure
+    show! "impure_fn -> " an_impure!
+    show! "module    -> " math
+}

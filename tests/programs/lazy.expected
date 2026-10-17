@@ -1,0 +1,10 @@
+unused binding: :never_forced
+if branch:     :taken
+short circuit: false
+short circuit: true
+lazy elements: 3
+lazy map:      2
+lazy array:    2
+array_get:     true
+map_get:       true
+map_get miss:  true

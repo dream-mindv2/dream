@@ -1,0 +1,23 @@
+// A process that outgrows its heap gets `:out_of_memory`, and a `try!`
+// catches it: the handler runs, and so does everything after it.
+//
+// The limit is judged by the live bytes the last collection measured, so
+// before the fix every step after the raise raised again -- the handler's
+// first allocation included -- until a collection happened to run. Run with
+// DREAM_MAX_HEAP at 64 MB (heap_limit_caught.env).
+import std.console;
+import std.error;
+import std.list;
+
+let grow! n = {
+    let rec go! i acc = if i == n { len acc } else { go! (i + 1) ((str_of i) :: acc) };
+    go! 0 []
+};
+
+let str_of i = to_string i + "....................................................................................................";
+
+let main! = {
+    let caught = try! { grow! 10000000 } catch e { [:caught, error.kind e, "a handler that allocates: " + to_string (list.range 0 3)] };
+    console.print! caught
+    console.print! ("and the program carries on: " + to_string (list.sum (list.range 0 100)))
+};

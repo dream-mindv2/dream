@@ -1,0 +1,35 @@
+20000100000
+20000100000
+200000
+20000100000
+6
+0
+7.5
+2305843009213693952
+2305843009213693952
+<error :type_error cannot apply `add` to a string and integer 3>
+<error :type_error cannot apply `add` to integer 2 and a string>
+3.25
+16
+100000
+[2, 4, 6, 8, 10]
+[7, 8, 9, 10, 11]
+200000
+[3, 2, 1]
+1000
+2
+2499950000
+1009890
+<error :no_such_key the map has no key integer 50000>
+15
+<error :out_of_bounds index 5 is outside an array of 5>
+[3, 2, 1]
+30
+true
+false
+<error :type_error tail needs a non-empty list>
+12
+side 3
+side 2
+side 1
+6

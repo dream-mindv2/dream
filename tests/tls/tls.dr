@@ -1,0 +1,316 @@
+// std.tls, end to end: a server and its clients in one VM, over loopback.
+//
+// Compiled once and run unchanged on every platform (dream/tests/portable.py),
+// so the same Dream code meets OpenSSL on Linux and macOS and SChannel on
+// Windows -- which is the promise std.tls makes, and this is where it is kept.
+// What is printed is only what every backend must agree on: the kinds of the
+// failures, the protocol ALPN chose, the subject of the peer's certificate.
+// Messages, versions and cipher names are each library's own and are left out.
+//
+//     dream tls.dream DIR      -- DIR holds the fixtures (make_fixtures.sh)
+
+import std.console;
+import std.error;
+import std.file;
+import std.io;
+import std.list;
+import std.net;
+import std.os;
+import std.proc;
+import std.str;
+import std.streams;
+import std.test;
+import std.tls;
+
+let dir! : :unit -> :string;
+let dir! u = match os.args! () {
+    [d, .._] => d,
+    _ => "dream/tests/tls",
+};
+
+let fixture! : :string -> :string;
+let fixture! name = match file.read! (dir! () + "/" + name) {
+    () => raise! ("missing fixture " + name),
+    text => text,
+};
+
+let server_identity! : :unit -> :map;
+let server_identity! u = %{ :identity => fixture! "server.p12", :password => "dream" };
+
+let trusting! : :unit -> :map;
+let trusting! u = %{ :host => "localhost", :ca => fixture! "ca.pem" };
+
+/// Exactly `n` bytes, or fewer at the end of the stream.
+let exactly! : :any -> :integer -> [:string] -> :string;
+let rec exactly! sock n acc =
+    if n <= 0 { str.concat_all (list.reverse acc) }
+    else {
+        let chunk = io.read! sock (if n > 65536 { 65536 } else { n });
+        if len chunk == 0 { str.concat_all (list.reverse acc) }
+        else { exactly! sock (n - len chunk) (list.cons chunk acc) }
+    };
+
+/// Everything up to the end of the stream.
+let rest! : :any -> [:string] -> :string;
+let rec rest! sock acc = {
+    let chunk = io.read! sock 65536;
+    if len chunk == 0 { str.concat_all (list.reverse acc) } else { rest! sock (list.cons chunk acc) }
+};
+
+/// The kind a body raised, or `:ok`.
+let outcome! : (:unit -> :any) -> :any;
+let outcome! body! = try! { strict! (body! ()); :ok } catch e { error.kind e };
+
+// --- a server that answers one connection --------------------------------------
+//
+// It accepts, shakes hands with `options`, and then runs `respond!`; it answers
+// what happened, so a test can say what the server saw as well as the client.
+
+let serve_one! : :any -> :map -> (:any -> :any) -> :any;
+let serve_one! listener options respond! = {
+    let conn = net.accept! listener;
+    let shaken = try! { tls.accept! conn options; :ok } catch e { error.kind e };
+    let answer = if shaken == :ok { try! { respond! conn } catch e { error.kind e } } else { shaken };
+    try! { io.close! conn } catch e { () }
+    answer
+};
+
+let echo! : :any -> :any;
+let echo! conn = {
+    let got = io.read! conn 1000;
+    streams.write_all! conn ("echo: " + got)
+    got
+};
+
+let peer! : :any -> :any;
+let peer! conn = {
+    let info = tls.info! conn;
+    streams.write_all! conn "seen"
+    info.[:peer]
+};
+
+/// A server in a process of its own, and the port it listens on.
+let server! : :map -> (:any -> :any) -> [:process, :integer];
+let server! options respond! = {
+    let listener = net.listen! 0;
+    let port = net.port! listener;
+    // Bound before the list is built: an element is lazy, and a spawn left in
+    // one would not start until something read it.
+    let process = spawn! $( serve_one! listener options respond! );
+    [process, port]
+};
+
+let dial! : :integer -> :map -> :unit -> :any;
+let dial! port options u = {
+    let sock = net.connect! "127.0.0.1" port;
+    tls.connect! sock options
+    io.close! sock
+};
+
+// --- the cases -----------------------------------------------------------------------
+
+let round_trip! : :unit -> :any;
+let round_trip! u = {
+    let [server, port] = server! (server_identity! ()).[:alpn => ["dream/1", "http/1.1"]] echo!;
+    let sock = net.connect! "127.0.0.1" port;
+    test.eq! sock (tls.connect! sock (trusting! ()).[:alpn => ["dream/1"]])
+    let info = tls.info! sock;
+    test.eq! ["dream/1", "CN=localhost"] [info.[:alpn], info.[:peer]]
+    test.true! (str.starts_with "TLS" info.[:version])
+    streams.write_all! sock "hello"
+    test.eq! "echo: hello" (exactly! sock 11 [])
+    test.eq! "" (io.read! sock 100)
+    io.close! sock
+    test.eq! "hello" (join! server)
+};
+
+let by_address! : :unit -> :any;
+let by_address! u = {
+    let [server, port] = server! (server_identity! ()) echo!;
+    let sock = net.connect! "127.0.0.1" port;
+    tls.connect! sock %{ :host => "127.0.0.1", :ca => fixture! "ca.pem" }
+    streams.write_all! sock "ip"
+    test.eq! "echo: ip" (exactly! sock 8 [])
+    io.close! sock
+    join! server
+};
+
+let refusals! : :unit -> :any;
+let refusals! u = {
+    let cases = [
+        [server_identity! (), %{ :host => "localhost", :ca => fixture! "other_ca.pem" }, :certificate_untrusted],
+        [server_identity! (), %{ :host => "localhost" }, :certificate_untrusted],
+        [server_identity! (), %{ :host => "example.com", :ca => fixture! "ca.pem" }, :hostname_mismatch],
+        [%{ :identity => fixture! "expired.p12", :password => "dream" }, trusting! (), :certificate_expired],
+        [%{ :identity => fixture! "revoked.p12", :password => "dream" }, (trusting! ()).[:crl => fixture! "ca.crl"],
+         :certificate_revoked],
+    ];
+    test.eq! (list.map (fn c -> [list.nth 2 c, true]) cases)
+             (strict! (list.map (fn [server_opts, client_opts, _] -> refused! server_opts client_opts) cases))
+};
+
+/// The client's failure, and whether the server failed too rather than
+/// carrying on with a client that had walked away.
+let refused! : :map -> :map -> [:any, :bool];
+let refused! server_opts client_opts = {
+    let [server, port] = server! server_opts echo!;
+    let kind = outcome! (dial! port client_opts);
+    [kind, join! server != "hello"]
+};
+
+let unchecked! : :unit -> :any;
+let unchecked! u = {
+    let [server, port] = server! (server_identity! ()) echo!;
+    let sock = net.connect! "127.0.0.1" port;
+    tls.connect! sock %{ :verify => false }
+    streams.write_all! sock "anyway"
+    test.eq! "echo: anyway" (exactly! sock 12 [])
+    io.close! sock
+    join! server
+};
+
+/// The chain checked and the name not: what libpq calls `verify-ca`.
+let chain_only! : :unit -> :any;
+let chain_only! u = {
+    let [server, port] = server! (server_identity! ()) echo!;
+    let sock = net.connect! "127.0.0.1" port;
+    tls.connect! sock %{ :host => "example.com", :ca => fixture! "ca.pem", :check_name => false }
+    streams.write_all! sock "chain"
+    test.eq! "echo: chain" (exactly! sock 11 [])
+    io.close! sock
+    join! server
+    let [_, refused] = refused! (server_identity! ())
+                                %{ :host => "localhost", :ca => fixture! "other_ca.pem", :check_name => false };
+    test.true! refused
+    test.eq! [:certificate_untrusted, true]
+             (refused! (server_identity! ()) %{ :ca => fixture! "other_ca.pem", :check_name => false })
+};
+
+let mutual! : :unit -> :any;
+let mutual! u = {
+    let wants_client = (server_identity! ()).[:ca => fixture! "ca.pem"].[:verify => true];
+    let [server, port] = server! wants_client peer!;
+    let sock = net.connect! "127.0.0.1" port;
+    tls.connect! sock (trusting! ()).[:identity => fixture! "client.p12"].[:password => "dream"]
+    test.eq! "seen" (exactly! sock 4 [])
+    io.close! sock
+    test.eq! "CN=Dream Test Client" (join! server)
+
+    // Without a certificate the server will not carry on. Under TLS 1.3 the
+    // client can finish its half first and only hear so when it next reads.
+    let [refusing, port2] = server! wants_client peer!;
+    let anonymous = try! {
+        let s = net.connect! "127.0.0.1" port2;
+        tls.connect! s (trusting! ())
+        let said = io.read! s 4;
+        io.close! s
+        said
+    } catch e { error.kind e };
+    test.true! (anonymous == "" || anonymous == :handshake_failed || anonymous == :tls_error
+                || anonymous == :connection_lost)
+    test.eq! :handshake_failed (join! refusing)
+};
+
+let bad_config! : :unit -> :any;
+let bad_config! u = {
+    let listener = net.listen! 0;
+    let port = net.port! listener;
+    let sock = net.connect! "127.0.0.1" port;
+    test.eq! [:tls_config, :tls_config, :bad_argument, :bad_argument]
+             [outcome! (upgrade! sock (trusting! ()).[:ca => "not a certificate"]),
+              outcome! (upgrade_server! sock %{ :identity => fixture! "server.p12", :password => "wrong" }),
+              outcome! (upgrade! sock %{ :ca => fixture! "ca.pem" }),
+              outcome! (upgrade_server! sock %{})]
+    io.close! sock
+    io.close! listener
+    test.eq! () (tls.info! (net.listen! 0) |> plain_info)
+};
+
+let upgrade! : :any -> :map -> :unit -> :any;
+let upgrade! sock options u = tls.connect! sock options;
+
+let upgrade_server! : :any -> :map -> :unit -> :any;
+let upgrade_server! sock options u = tls.accept! sock options;
+
+let plain_info : :any -> :any;
+let plain_info i = i;
+
+/// A payload larger than any buffer on the way, both ways at once, so every
+/// write parks part-way and every read is several records.
+let bulk! : :unit -> :any;
+let bulk! u = {
+    let size = 3000000;
+    let [server, port] = server! (server_identity! ()) (bulk_echo! size);
+    let sock = net.connect! "127.0.0.1" port;
+    tls.connect! sock (trusting! ())
+    let payload = str.repeat (size / 10) "0123456789";
+    let writer = spawn! $( streams.write_all! sock payload );
+    let back = exactly! sock size [];
+    join! writer
+    test.eq! [size, true] [len back, back == payload]
+    io.close! sock
+    test.eq! size (join! server)
+};
+
+let bulk_echo! : :integer -> :any -> :integer;
+let bulk_echo! size conn = {
+    let got = exactly! conn size [];
+    streams.write_all! conn got
+    len got
+};
+
+/// Many handshakes at once, each a process of its own.
+let many! : :unit -> :any;
+let many! u = {
+    let listener = net.listen! 0;
+    let port = net.port! listener;
+    let n = 24;
+    let acceptor = spawn! $( accept_all! listener (server_identity! ()) n [] );
+    let answers = proc.map! (talk! port) (list.range 0 n);
+    test.eq! (list.map (fn i -> "echo: " + to_string i) (list.range 0 n)) answers
+    test.eq! n (len (proc.wait_all! (join! acceptor)))
+    io.close! listener
+};
+
+/// One process accepting, as a server does, and a process for each connection
+/// it accepts: the handshakes run side by side in those.
+let accept_all! : :any -> :map -> :integer -> [:process] -> [:process];
+let rec accept_all! listener options n acc =
+    if n == 0 { acc }
+    else {
+        let conn = net.accept! listener;
+        let handler = spawn! $( handle_one! conn options );
+        accept_all! listener options (n - 1) (list.cons handler acc)
+    };
+
+let handle_one! : :any -> :map -> :any;
+let handle_one! conn options = {
+    tls.accept! conn options
+    let got = echo! conn;
+    io.close! conn
+    got
+};
+
+let talk! : :integer -> :integer -> :string;
+let talk! port i = {
+    let sock = net.connect! "127.0.0.1" port;
+    tls.connect! sock (trusting! ())
+    streams.write_all! sock (to_string i)
+    let back = rest! sock [];
+    io.close! sock
+    back
+};
+
+let main! = test.main_of! [
+    ["std.tls", [
+        test.case "a round trip, ALPN, and a clean end" $( round_trip! () ),
+        test.case "a server named by its address" $( by_address! () ),
+        test.case "untrusted, unknown, misnamed, expired and revoked certificates" $( refusals! () ),
+        test.case "verification turned off" $( unchecked! () ),
+        test.case "the chain checked and not the name" $( chain_only! () ),
+        test.case "mutual TLS" $( mutual! () ),
+        test.case "configurations that cannot work" $( bad_config! () ),
+        test.case "megabytes both ways at once" $( bulk! () ),
+        test.case "many handshakes at once" $( many! () ),
+    ]],
+];

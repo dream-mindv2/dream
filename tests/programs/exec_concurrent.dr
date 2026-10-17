@@ -1,0 +1,22 @@
+// Two children at once: a slow one, and a quick one started beside it. Each
+// child must inherit only its own pipes. When they were not close-on-exec, the
+// slow child held the quick one's output pipe open, so the quick one's reader
+// waited for the slow one to exit -- and a deadline shorter than that reported
+// the quick one, which had printed and quit at once, as timed out.
+import std.os;
+import std.console;
+import std.vm;
+import std.proc;
+
+let slow! u = os.exec_for! "sleep" ["2"] 5000;
+
+let main! = {
+    let p = spawn! $( slow! () );
+    proc.sleep! 100
+    let t0 = vm.wall_ms! ();
+    let quick = os.exec_for! "echo" ["quick"] 1000;
+    let took = vm.wall_ms! () - t0;
+    console.print! ("quick: " + quick.[:out] + "timed out: " + to_string quick.[:timed_out] + ", in time: " + to_string (took < 1000))
+    let s = join! p;
+    console.print! ("slow: exit " + to_string s.[:code])
+};

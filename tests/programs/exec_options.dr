@@ -1,0 +1,27 @@
+// A child with a directory and variables of its own: what a build step runs
+// things with, since steps run at once and `chdir!` and `set_env!` are the
+// whole VM's. `exec_joined!` writes the child's errors into its output, in
+// the order they happened, which is what a check compares with a recorded
+// file.
+import std.console;
+import std.os;
+
+let sh_in! dir script = os.exec_in! dir "sh" ["-c", script] 0;
+let sh_with! env script = os.exec_with! "/" env "sh" ["-c", script] 0;
+
+let main! = {
+    console.print! (sh_in! "/" "pwd").[:out]
+
+    // Laid over what this VM has, not in addition to it.
+    os.set_env! "DREAM_EXEC_TEST" "inherited"
+    console.print! (sh_with! [] "echo $DREAM_EXEC_TEST").[:out]
+    console.print! (sh_with! ["DREAM_EXEC_TEST=given"] "echo $DREAM_EXEC_TEST").[:out]
+
+    let apart = sh_with! [] "echo one; echo two >&2; echo three";
+    console.print! [apart.[:out], apart.[:err]]
+    let joined = os.exec_joined! "/" [] "sh" ["-c", "echo one; echo two >&2; echo three"] 0;
+    console.print! [joined.[:code], joined.[:out], joined.[:err]]
+
+    console.print! (os.exec_in! "/" "sh" ["-c", "sleep 5"] 100).[:timed_out]
+    console.print! (try! { os.exec_with! "/" ["no equals sign"] "true" [] 0 } catch e { :bad_argument })
+};

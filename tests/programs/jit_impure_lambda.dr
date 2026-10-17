@@ -1,0 +1,22 @@
+// An impure function whose body is a pure call -- `str.join_str` over
+// `list.map` -- handed a lambda that performs effects and parks. The lambda
+// sits in an argument, a lazy position the JIT's checks never walk, so the
+// function looked compilable; and compiled code that parks is retried from the
+// top, which made the lambda and the thunks it is mapped into afresh and ran
+// every step again on every retry. `mind docs` rendered a page this way and
+// started the same example compiles until it was killed. Each step must print
+// once, and the function must be left to the interpreter.
+import std.list;
+import std.str;
+import std.console;
+
+let slow n = list.sum (list.range 0 n);
+let work! t = spawn! $( slow t );
+
+let render! xs = str.join_str "," (list.map (fn x -> {
+    let v = join! (work! (x * 20000));
+    console.print! ("step " + to_string x);
+    to_string v
+}) xs);
+
+let main! = console.print! (render! (list.range 0 4));

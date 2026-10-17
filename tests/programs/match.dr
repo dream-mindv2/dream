@@ -1,0 +1,66 @@
+// Pattern matching.
+//
+// `match` compiles to a chain of ordinary tests -- comparisons and a handful
+// of builtins -- so it needs no imports and no new opcodes. Two properties are
+// worth checking here rather than trusting: a pattern forces only as much as
+// deciding takes, and the arms are tried strictly in source order.
+import std.console;
+import std.list;
+
+let boom n = 1 / 0;
+let rec from n = list.cons n (from (n + 1));
+
+let describe v = match v {
+    0 => "zero",
+    n if type_of n == :integer && n < 0 => "negative",
+    :ok => "the ok atom",
+    "hi" => "a greeting",
+    true => "yes",
+    () => "nothing",
+    3.5 => "that float",
+    'c' => "that char",
+    [] => "empty list",
+    [x] => "one: " + to_string x,
+    [a, b] => "two: " + to_string (a + b),
+    [h, ..t] => "head " + to_string h + " rest " + to_string t,
+    #[p, q] => "array of two: " + to_string (p + q),
+    #[] => "empty array",
+    %{ :kind => k } => "kind " + to_string k,
+    other => "other: " + to_string other,
+};
+
+let rec sum xs = match xs {
+    [] => 0,
+    [x, ..rest] => x + sum rest,
+};
+
+let main! = {
+    console.print! describe_all
+    console.print! ("sum:        " + to_string (sum [1, 2, 3, 4]))
+    console.print! ("nested:     " + to_string (match [[1, 2], [3]] { [[a, b], [c]] => a + b + c, _ => 0 }))
+    console.print! ("as pattern: " + to_string (match [3, 4] { [a, b] as whole => to_string whole + " " + to_string (a + b), _ => "no" }))
+
+    // Only the cells are forced. Neither element is ever looked at, so the
+    // division by zero inside them never happens.
+    console.print! ("lazy elems: " + to_string (match [boom 1, boom 2] { [x, y] => :two_cells, _ => :other }))
+
+    // An infinite list: the pattern looks at two cells and stops.
+    console.print! ("infinite:   " + to_string (match (from 1) { [a, b, ..rest] => a + b, _ => 0 }))
+
+    // Order decides: the first arm that matches wins, even when a later one
+    // would match too.
+    console.print! ("order:      " + to_string (match 1 { n => :first, 1 => :second }))
+
+    // Nothing matched. Dream is dynamically typed, so this cannot be caught at
+    // compile time; a `_` arm is how a program declares itself total.
+    console.print! ("no match:   " + to_string (try! { match 7 { 1 => :a } } catch e { e }))
+};
+
+let describe_all = str_of [
+    describe 0, describe (0 - 5), describe :ok, describe "hi", describe true,
+    describe (), describe 3.5, describe 'c', describe [], describe [9],
+    describe [1, 2], describe [1, 2, 3], describe #[1, 2], describe #[],
+    describe %{ :kind => :thing }, describe :zzz,
+];
+
+let str_of xs = list.fold (fn acc s -> acc + s + "\n") "" xs;

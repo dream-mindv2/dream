@@ -1,0 +1,24 @@
+import std.console;
+
+let sum : [:integer] -> :integer;
+let rec sum xs = match xs { [] => 0, h :: t => h + sum t };
+let first (h :: _) = h;
+let rec loop () = loop ();
+let classified value = match value { _ :: _ => :nonempty, [] => :empty, _ => :other };
+let tagged : [:ok, :integer] | [:error, :string] -> :string;
+let tagged value = match value {
+    :ok :: n :: [] => to_string (n + 1),
+    :error :: message :: [] => message,
+};
+let main! = {
+    console.print! (sum [1, 2, 3, 4])
+    console.print! (match [1, 2, 3] { a :: b :: rest if a == 1 => [a, b, rest], _ => [] })
+    console.print! (match [4, 5] { h :: t as all => [h, t, all] })
+    console.print! (match [4, 5] { h :: (t as rest) => [h, t, rest] })
+    console.print! (match [[6, 7], [8]] { (a :: _) :: rest => [a, rest] })
+    console.print! [classified [], classified [1], classified 1, classified #[1]]
+    console.print! (first (9 :: loop ()))
+    let (h :: t) = [10, 11];
+    console.print! [h, t]
+    console.print! [tagged [:ok, 41], tagged [:error, "failed"]]
+};

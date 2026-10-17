@@ -1,0 +1,24 @@
+import std.console;
+import std.os;
+import std.path;
+
+let main! = {
+    console.print! (path.normalize "/a/b/../c" == "/a/c")
+    console.print! (path.dirname "/" == "/")
+    match os.platform () {
+        :windows => {
+            console.print! (path.normalize "C:\\a\\..\\..\\b" == "C:/b")
+            console.print! (path.dirname "C:\\" == "C:/")
+            console.print! (path.normalize "\\\\server\\share\\a\\..\\.." == "//server/share/")
+            console.print! (path.join "C:/a" "D:\\b" == "D:/b")
+            console.print! (path.extension "C:\\a.b\\file" == "")
+        },
+        _ => {
+            console.print! (path.normalize "../a/../b" == "../b")
+            console.print! (path.dirname "/a" == "/")
+            console.print! (path.normalize "/a/../../" == "/")
+            console.print! (path.join "/a" "/b" == "/b")
+            console.print! (path.extension "a.b/file" == "")
+        },
+    }
+};

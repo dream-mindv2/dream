@@ -1,0 +1,40 @@
+// A process that runs away must die on its own, not take the runtime with it.
+//
+// `blow n - 1` is `(blow n) - 1`: the subtraction is still pending when the
+// recursive call is made, so it is not a tail call and every level leaves a
+// continuation behind. Unbounded, that grows until the allocator throws and
+// `terminate` loses every other process along with it.
+//
+// A process is the unit of failure here, so instead the runtime raises in the
+// process that did it. `try!` catches it, `join!` receives it, and everything
+// else carries on. `runaway.env` sets a small limit so this is quick; the real
+// one is four million frames.
+import std.console;
+
+let rec blow n = blow n - 1;
+
+let rec sum_to n = if n <= 0 { 0 } else { n + sum_to (n - 1) };
+
+// Runs away the other way round: the addition waits *in front of* the call.
+// Compiled, that is a loop carrying the pending sum, and it must still die of
+// the same limit rather than run for ever -- past `DREAM_MAX_DEPTH` pending
+// levels the loop hands the call to the interpreter, which overflows where it
+// always did.
+let rec climb n = 1 + climb (n + 1);
+
+let main! = {
+    // Caught in the process that ran away.
+    console.print! ("direct:    " + to_string (try! { blow 1 } catch e { e }))
+
+    // ..and delivered to a joiner when it happens in another process.
+    let bad = spawn! $( blow 1 );
+    console.print! ("joined:    " + to_string (try! { join! bad } catch e { e }))
+
+    // The runtime is unharmed: other processes still run.
+    console.print! ("survivors: " + to_string (join! (spawn! $( 6 * 7 ))))
+
+    console.print! ("climb:     " + to_string (try! { climb 1 } catch e { e }))
+
+    // Recursion that is merely deep, rather than unbounded, is untouched.
+    console.print! ("deep ok:   " + to_string (sum_to 20000))
+};

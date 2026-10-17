@@ -1,0 +1,55 @@
+// Destructuring: a `let` and a parameter take the patterns a `match` arm takes.
+//
+// A destructuring `let` is as lazy as any other `let`. Nothing is looked at
+// until a name it binds is used, and then the whole pattern is checked, once; a
+// value that does not fit raises `:match_error`, as a `match` with no arm for it
+// does.
+import std.console;
+import std.list;
+
+let boom n = 1 / 0;
+let rec from n = list.cons n (from (n + 1));
+
+// At the top level, every name is a global of its own.
+let [first, second, ..others] = [10, 20, 30, 40];
+let %{ :name => name, :size => size } = %{ :name => "widget", :size => 3, :colour => :blue };
+let #[left, right] = #["left", "right"];
+
+let add_pair [a, b] = a + b;
+let area %{ :w => w, :h => h } = w * h;
+let describe ([x, ..rest] as whole) =
+    to_string x + " of " + to_string whole + ", then " + to_string rest;
+let rec total [x, ..rest] acc = match rest { [] => acc + x, _ => total rest (acc + x) };
+
+let main! = {
+    console.print! ("top level:  " + to_string [first, second] + " " + to_string others)
+    console.print! ("map:        " + name + " x" + to_string size)
+    console.print! ("array:      " + left + " " + right)
+
+    let [a, b] = [1, 2];
+    let [[c, d], %{ :e => e }] = [[3, 4], %{ :e => 5 }];
+    console.print! ("block:      " + to_string (a + b + c + d + e))
+
+    console.print! ("params:     " + to_string [add_pair [3, 4], area %{ :w => 6, :h => 7 }])
+    console.print! ("as:         " + describe [1, 2, 3])
+    console.print! ("recursion:  " + to_string (total [1, 2, 3] 0))
+    console.print! ("lambda:     " + to_string (list.map (fn [k, v] -> k * v) [[1, 2], [3, 4]]))
+
+    // Nothing is forced until a name is used, and this one never is.
+    let [unused] = boom 0;
+    // Only the cells are forced, never an element nobody reads.
+    let [p, q] = [boom 1, 2];
+    console.print! ("lazy:       " + to_string q)
+    // An infinite list: the pattern walks two cells and stops.
+    let [n1, n2, ..more] = from 1;
+    console.print! ("infinite:   " + to_string (n1 + n2))
+
+    // A value with effects is still bound where it is written.
+    let [u, v] = { console.print! "effects:    at the let"; [1, 2] };
+    console.print! ("            and then " + to_string (u + v))
+
+    // A shape that does not fit raises when a name is first used.
+    let [only] = [1, 2];
+    console.print! ("mismatch:   " + to_string (try! { only } catch err { err }))
+    console.print! ("wrong kind: " + to_string (try! { add_pair %{ } } catch err { err }))
+};

@@ -1,0 +1,6 @@
+["freed", true]
+["held", true, 2000, true]
+["dependency", true, true]
+["mailbox", true, true]
+:not_shared
+["passed around", true, true]

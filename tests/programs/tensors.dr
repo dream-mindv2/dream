@@ -1,0 +1,95 @@
+// Tensors on the host: the operators, `@`, and `std.tensor`.
+import std.console;
+import std.tensor;
+
+let kind! thunk = try! { thunk () } catch e { _error_kind e };
+
+let main! = {
+    let a = tensor.of_list [[1, 2], [3, 4]];
+    let b = tensor.of_list #[#[5.0, 6.0], #[7.0, 8.0]];
+    let v = tensor.of_list [1, 2];
+
+    // --- elementwise, by the ordinary operators ---
+    console.print! (a + b)
+    console.print! (a - b)
+    console.print! (a * b)
+    console.print! (b / a)
+    console.print! (b % a)
+    console.print! (a * 2)
+    console.print! (0.5 * a)
+    console.print! (10 - a)
+    console.print! (-a)
+    console.print! (a + v)
+    console.print! (v * a)
+
+    // --- products ---
+    console.print! (a @ b)
+    console.print! (a @ v)
+    console.print! (v @ a)
+    console.print! (v @ v)
+    console.print! ([1, 2, 3] @ [4, 5, 6])
+    console.print! (#[1, 2] @ [[1, 0], [0, 1]])
+    console.print! (a @ b @ a)
+    console.print! (a + a @ a)
+    console.print! (tensor.dot [1, 2, 3] [4, 5, 6])
+    console.print! (tensor.matmul a b == a @ b)
+    console.print! (tensor.outer [1, 2] [3, 4, 5])
+
+    // --- reading ---
+    console.print! (a.[1])
+    console.print! (a.[1].[0])
+    console.print! (a.[5 else ()])
+    console.print! (len a)
+    console.print! (type_of a)
+    console.print! (tensor.shape (tensor.zeros [2, 3, 4]))
+    console.print! [tensor.rank a, tensor.size a]
+    console.print! (tensor.at a [1, 0])
+    console.print! (tensor.to_list a)
+    console.print! [tensor.device a, tensor.dtype a]
+
+    // --- shape ---
+    console.print! (tensor.transpose (tensor.of_list [[1, 2, 3], [4, 5, 6]]))
+    console.print! (tensor.reshape [4] a)
+    console.print! (tensor.reshape [2, 1, 2] a)
+
+    // --- reductions ---
+    console.print! [tensor.sum b, tensor.mean b, tensor.minimum b, tensor.maximum b]
+    console.print! (tensor.norm [3, 4])
+    console.print! [tensor.sum_axis 0 a, tensor.sum_axis 1 a]
+
+    // --- building ---
+    console.print! (tensor.identity 3)
+    console.print! (tensor.ones [2, 2] + tensor.fill [2] 0.5)
+    console.print! (tensor.range 4)
+    console.print! (tensor.random 7 [2] == tensor.random 7 [2])
+    console.print! (tensor.random 7 [2] == tensor.random 8 [2])
+    console.print! (tensor.maximum (tensor.random 1 [1000]) < 1.0)
+
+    // --- elementwise functions ---
+    console.print! (tensor.relu (tensor.of_list [-1, 0, 2]))
+    console.print! (tensor.sqrt (tensor.of_list [1, 4, 9]))
+    console.print! (tensor.abs (tensor.of_list [-1, 2]))
+    console.print! (tensor.sigmoid (tensor.of_list [0]))
+    console.print! (tensor.exp (tensor.of_list [0]))
+
+    // --- values ---
+    console.print! (a == tensor.of_list [[1, 2], [3, 4]])
+    console.print! (a == b)
+    console.print! (a == tensor.of_list [1, 2, 3, 4])
+    console.print! (compare a b)
+    console.print! (compare v a)
+    console.print! (to_string v)
+    console.print! (tensor.zeros [100, 100])
+
+    // --- what raises ---
+    console.print! (kind! (fn () -> a + tensor.of_list [1, 2, 3]))
+    console.print! (kind! (fn () -> a @ tensor.of_list [1, 2, 3]))
+    console.print! (kind! (fn () -> a + [1, 2]))
+    console.print! (kind! (fn () -> tensor.of_list [[1, 2], [3]]))
+    console.print! (kind! (fn () -> tensor.of_list [1, "x"]))
+    console.print! (kind! (fn () -> tensor.of_list []))
+    console.print! (kind! (fn () -> tensor.reshape [3] a))
+    console.print! (kind! (fn () -> a.[2]))
+    console.print! (kind! (fn () -> tensor.at a [0, 2]))
+    console.print! (kind! (fn () -> tensor.dot a a))
+};

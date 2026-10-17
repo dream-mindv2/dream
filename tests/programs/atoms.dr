@@ -1,0 +1,56 @@
+// `_to_existing_atom` -- the one direction there is between a string and
+// an atom, and why there is only the one.
+//
+// An atom is an index into a table the runtime never shrinks: every atom value
+// in every process is one of those indexes, so none can be reused. A program
+// that interned whatever text arrived from outside would therefore grow that
+// table until it died, and no collector could reach it. So there is no
+// `to_atom` to write that program with, and this is the half that is safe --
+// it asks rather than asserts, and answers `()` for a name the program does
+// not write anywhere.
+//
+// Both tiers run this, and the JIT is not incidental: the native is pure, of
+// fixed arity one, and does not vouch for the collector, which is precisely
+// what `native_site` admits. So the loops at the end may be compiled, and the
+// answers must not move when they are.
+import std.console;
+
+let show! label v = console.print! (label + to_string v);
+
+/// The names this program writes as atoms. Printed rather than merely
+/// mentioned, because a constant nothing reaches is a constant the sharing
+/// pass is free to leave out of the image -- and then the atom it named would
+/// not exist to be found, which would make this file test the optimizer
+/// instead of the native.
+let written = [:ok, :error, :pending];
+
+/// Asked `n` times over, so that the loop gets hot enough for the tier to take
+/// it. `s` is handed straight back on every self call and never forced, which
+/// is what `Analyzer::carried` is for.
+let rec found s i n acc =
+    if i >= n { acc }
+    else { found s (i + 1) n (acc + if _to_existing_atom s == () { 0 } else { 1 }) };
+
+let main! = {
+    show! "the atoms this program writes -> " written
+
+    show! "a name it writes -> " (_to_existing_atom "ok")
+    show! "  and it is that very atom -> " (_to_existing_atom "ok" == :ok)
+    show! "another of them -> " (_to_existing_atom "pending")
+    show! "one written nowhere -> " (_to_existing_atom "no_such_atom_here")
+    show! "the empty name -> " (_to_existing_atom "")
+
+    // Asking is not interning: the name it was not given stays absent, which
+    // is the whole guarantee this function exists to make.
+    show! "asking did not create it -> " (_to_existing_atom "no_such_atom_here")
+
+    // Built while the program runs rather than written as a literal, so the
+    // lookup is over bytes and not over something the compiler resolved.
+    show! "a name built at run time -> " (_to_existing_atom (_str_slice "okay" 0 2))
+
+    show! "not a string -> " (try! { _to_existing_atom 5 } catch e { e })
+    show! "an atom is not a name -> " (try! { _to_existing_atom :ok } catch e { e })
+
+    show! "found 100000 times -> " (found "error" 0 100000 0)
+    show! "missed 100000 times -> " (found "no_such_atom_here" 0 100000 0)
+}

@@ -1,0 +1,34 @@
+// `receive! { pattern => body, .., after ms => body }`: the first message an
+// arm takes, taken out of the mailbox, with every other left where it was.
+import std.console;
+import std.list;
+
+let rec drain! !n = if n == 0 { [] } else { list.cons (recv! ()) (drain! (n - 1)) };
+
+/// A server's loop written with it: one request at a time, a reply to each,
+/// and anything else left for later.
+let rec counter! !total = receive! {
+    [:add, k] => counter! (total + k),
+    [:get, from] => { send! from [:total, total]; counter! total },
+    :stop => total,
+};
+
+let main! = {
+    let me = self! ();
+    send! me :noise
+    send! me [:reply, 3]
+    send! me [:reply, 7]
+    send! me [:other, 1]
+
+    console.print! (receive! { [:reply, v] if v > 5 => $"big {v}", [:other, n] => $"other {n}" })
+    console.print! (receive! { [:other, n] => n })
+    console.print! (receive! { :missing => :found, after 20 => :timed_out })
+    console.print! (strict! (drain! 2))
+
+    let c = spawn! $( counter! 0 );
+    strict! (list.map (fn k -> send! c [:add, k]) (list.range 1 2001))
+    send! c [:get, me]
+    console.print! (receive! { [:total, t] => t, after 5000 => :no_answer })
+    send! c :stop
+    console.print! (join! c)
+};

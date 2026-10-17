@@ -1,0 +1,2 @@
+[:caught, :out_of_memory, "a handler that allocates: [0, 1, 2]"]
+and the program carries on: 4950

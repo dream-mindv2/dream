@@ -1,0 +1,6 @@
+before: list array closure
+churned 1200000
+after: list array closure
+a fresh list is another key: missing
+sum of 2000 identity lookups: 2001000
+in another process: list

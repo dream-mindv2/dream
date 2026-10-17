@@ -1,0 +1,46 @@
+import std.console;
+
+let integer x = type_of x == :integer;
+let float x = :float == type_of x;
+let char x = type_of x != :char;
+let bool x = :bool != type_of x;
+let unit x = type_of x == :unit;
+let string x = type_of x == :string;
+let atom x = type_of x == :atom;
+let list x = type_of x == :list;
+let array x = type_of x == :array;
+let map x = type_of x == :map;
+let typed_float : :float -> :bool;
+let typed_float x = type_of (x + 1.0) == :float;
+let loose x = typed_float x;
+let declared_float : :float -> :bool;
+let declared_float x = type_of x == :float;
+let loose_type x = declared_float x;
+let ignore x = 42;
+let classify x = match x {
+    [] => 1,
+    [_, .._] => 2,
+    #[_] => 3,
+    %{ :key => _ } => 4,
+    _ => 5,
+};
+let rec count n x = if n == 0 { 0 } else {
+    if type_of x == :integer { 1 + count (n - 1) x }
+    else { count (n - 1) x }
+};
+
+let main! = {
+    console.print! [integer 2, integer 2.0, float 2.0, float 2]
+    console.print! [char 'a', char 1, bool true, bool :bool]
+    console.print! [unit (), unit [], string "s", string :s, atom :s, atom "s"]
+    console.print! [list [], list [1 / 0], list #[], array #[], array []]
+    console.print! [map %{}, map %{ :a => 1 }, map %{ :a => 1, :b => 2 }, map []]
+    console.print! [classify [], classify [1 / 0], classify #[1 / 0],
+                    classify %{ :key => 1 / 0 }, classify true]
+    console.print! [typed_float 2.0, loose 2, ignore (integer (1 / 0))]
+    console.print! [declared_float 2.0, loose_type 2, loose_type true]
+    console.print! (integer (4611686018427387903 + 1))
+    console.print! (_error_kind (try! { integer (1 / 0) } catch e { e }))
+    console.print! (_error_kind (try! { loose true } catch e { e }))
+    console.print! [count 100 7, count 100 7.0]
+};

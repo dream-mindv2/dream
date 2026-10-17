@@ -1,0 +1,38 @@
+// A compiled function forcing an argument that blocks.
+//
+// A pure function may be handed an impure call unevaluated -- `agent.value_as!`
+// passes `value! pid` straight to `types.check` -- and forcing that argument
+// sends a message and waits for the reply. Under the interpreter the force is a
+// continuation, so the process parks and resumes into it. Compiled code forces
+// by calling into `force_whnf`, which can only *suspend* the work and report
+// that it did not finish; the compiled caller used to read that as a raise of
+// whatever the process was holding, and the program died with `()`. It must
+// instead be run again once the suspended work completes (`EnterRetry` in
+// dream/src/interp.cpp), and print exactly what the interpreter prints.
+import std.console;
+import std.os;
+
+// Strict in `x`, so the tier compiles it and forces `x` from machine code.
+let magnitude x = if x > 0 { x } else { 0 - x };
+
+let server! () = {
+    let from = recv! ();
+    let n = recv! ();
+    send! from (n * 2)
+    server! ()
+};
+
+let ask! pid n = {
+    send! pid (self! ())
+    send! pid n
+    recv! ()
+};
+
+let main! = {
+    let pid = spawn! $(server! ());
+    // Each argument is an unevaluated impure call that blocks when forced.
+    console.print! (magnitude (ask! pid 21))
+    console.print! (magnitude (ask! pid (0 - 5)))
+    console.print! (magnitude (ask! pid 7) + magnitude (ask! pid 8))
+    os.exit! 0
+};

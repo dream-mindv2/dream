@@ -1,0 +1,39 @@
+// Forcing a suspended `join!` from inside an operator.
+//
+// `==` and list `+` both force their operands, and an operand can be a lazy
+// list whose cells are `join!`s that have not been waited for yet. Forcing one
+// of those has to park the process -- but the operator is the machine, not a
+// native, so it has no native call to return `Block` from.
+//
+// The machine used to treat "the nested force gave up" as "the nested force
+// raised", and the process died with an error carrying no kind and no message:
+//
+//     dream: uncaught error: ()
+//
+// Nothing here writes an effect at the comparison itself. The effects are in
+// the list, put there by an impure function that handed back its work rather
+// than its answer -- which is easy to do by accident and must not be fatal.
+import std.console;
+import std.list;
+
+let show! label v = { console.print! (to_string label + (to_string v)) };
+
+/// Hands back a list whose cells are still `join!`s: lazy, and impure.
+let pending! xs = {
+    let running = strict! (list.map (fn x -> spawn! $( strict! (x * 2) )) xs);
+    list.map (fn p -> join! p) running
+};
+
+let main! = {
+    show! "== against a literal      -> " (pending! [1, 2, 3] == [2, 4, 6])
+    show! "== the other way round    -> " ([2, 4, 6] == pending! [1, 2, 3])
+    show! "!= when they differ       -> " (pending! [1, 2] != [2, 5])
+    show! "two pending lists         -> " (pending! [1, 2] == pending! [1, 2])
+    show! "nested one level down     -> " ([[2, 4]] == [pending! [1, 2]])
+    // The other operator that forces a list it was handed.
+    show! "list + forces its left    -> " (pending! [1, 2] + [9])
+    show! "list + forces both sides  -> " (pending! [1] + pending! [2])
+    // Still correct when the answer is already known without waiting.
+    show! "different lengths         -> " (pending! [1, 2] == [2])
+    show! "and inside a process too  -> " (join! (spawn! $( pending! [1, 2] == [2, 4] )))
+}

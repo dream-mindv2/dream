@@ -1,0 +1,159 @@
+// Fused elementwise arithmetic on tensors large enough to be deferred.
+//
+// Past a few thousand numbers, `+ - * / %` and the elementwise functions do
+// not compute: they record a program, and whatever reads the numbers runs the
+// whole chain in one pass. Every check here compares a fused answer with the
+// same arithmetic done one element at a time on plain floats -- the same
+// operations in the same order, so the answers must be equal exactly, not
+// nearly.
+import std.console;
+import std.list;
+import std.tensor;
+
+let m = tensor.random 1 [60, 100] - 0.5;
+let n = tensor.random 2 [60, 100];
+let v = tensor.random 3 [100];
+
+/// `fused` at `[i, j]` is `scalar` of the inputs at `[i, j]` (and `v` at `j`),
+/// for a spread of positions across the whole tensor.
+let agrees : :tensor -> (:float -> :float -> :float -> :float) -> :bool;
+let agrees fused scalar = list.all (fn k -> {
+    let i = k * 7 % 60;
+    let j = k * 13 % 100;
+    tensor.at fused [i, j] == scalar (tensor.at m [i, j]) (tensor.at n [i, j]) (tensor.at v [j])
+}) (list.range 0 200);
+
+let relu : :float -> :float;
+let relu x = if x > 0.0 { x } else { 0.0 };
+
+/// `x * 0.5 + 1.0`, `k` times: a chain far past what one program holds, so it
+/// is computed in pieces as it grows.
+let halve : :integer -> :tensor -> :tensor;
+let rec halve k !x = if k == 0 { x } else { halve (k - 1) (x * 0.5 + 1.0) };
+
+let halve_f : :integer -> :float -> :float;
+let rec halve_f k !x = if k == 0 { x } else { halve_f (k - 1) (x * 0.5 + 1.0) };
+
+let main! = {
+    console.print! (agrees (m * 2.0 + n - 1.0) (fn a b c -> a * 2.0 + b - 1.0))
+    console.print! (agrees (tensor.relu (m * n + v)) (fn a b c -> relu (a * b + c)))
+    console.print! (agrees ((v + 1.0) * m - n / 4.0) (fn a b c -> (c + 1.0) * a - b / 4.0))
+    console.print! (agrees (m * m * m) (fn a b c -> a * a * a))
+    console.print! (agrees (1.0 - tensor.exp (0.0 - n)) (fn a b c -> 1.0 - math_exp (0.0 - b)))
+    console.print! (agrees (halve 100 m) (fn a b c -> halve_f 100 a))
+
+    // A deferred tensor is computed once and then read as numbers.
+    let d = m * 3.0 + n;
+    console.print! (d.[5].[7] == tensor.at m [5, 7] * 3.0 + tensor.at n [5, 7])
+    console.print! (tensor.at d [59, 99] == tensor.at m [59, 99] * 3.0 + tensor.at n [59, 99])
+    console.print! (d == strict! (m * 3.0 + n))
+    console.print! (tensor.shape d == [60, 100])
+    console.print! (len d == 60)
+
+    // Reductions of a deferred tensor, computed without storing it.
+    let near = fn a b -> a - b < 1.0e-9 && b - a < 1.0e-9;
+    console.print! (near (tensor.sum (m * n)) (tensor.reshape [6000] m @ tensor.reshape [6000] n))
+    console.print! (near (tensor.norm m) (math_sqrt (tensor.reshape [6000] m @ tensor.reshape [6000] m)))
+    console.print! (tensor.maximum (tensor.relu m) == tensor.maximum m)
+    console.print! (tensor.minimum (tensor.relu m) == 0.0)
+    console.print! (near (tensor.mean (n * 0.0 + 2.0)) 2.0)
+
+    // A deferred tensor sent to another process is computed there.
+    let e = m - n;
+    let there = join! (spawn! $( tensor.sum e ));
+    console.print! (near there (tensor.sum e))
+
+    // Fused into a product: the chain after `@` runs as each tile of the
+    // product is finished. `tensor.host` computes the product on its own
+    // first, and the two must agree exactly -- the product's arithmetic is the
+    // same either way, and so is the chain's.
+    let w = tensor.random 4 [200, 300] - 0.5;
+    let x = tensor.random 5 [300, 150] - 0.5;
+    let bias = tensor.random 6 [150];
+    console.print! (tensor.relu (w @ x + bias) == tensor.relu (tensor.host (w @ x) + bias))
+    let big = tensor.random 7 [400, 300];
+    let wide = tensor.random 8 [300, 400];
+    console.print! (tensor.sigmoid (big @ wide) * 2.0 == tensor.sigmoid (tensor.host (big @ wide)) * 2.0)
+    let tall = tensor.random 9 [5000, 30];
+    let col = tensor.random 10 [30];
+    console.print! (tensor.tanh (tall @ col - 1.0) == tensor.tanh (tensor.host (tall @ col) - 1.0))
+    console.print! (col @ tensor.transpose tall + 3.0 == tensor.host (col @ tensor.transpose tall) + 3.0)
+    let h = w @ x;
+    console.print! (h * h + h == tensor.host h * tensor.host h + tensor.host h)
+    console.print! (w @ x + w @ x == tensor.host (w @ x) * 2.0)
+    console.print! ((w @ x) * 0.0 + tensor.random 11 [150] == tensor.reshape [200, 150] (tensor.random 11 [150] + tensor.zeros [200, 150]))
+    console.print! (tensor.reshape [30000] (w @ x + 1.0) == tensor.reshape [30000] (tensor.host (w @ x) + 1.0))
+    console.print! (tensor.shape (tensor.reshape [150, 200] (w @ x + bias)) == [150, 200])
+    console.print! (near (tensor.sum (w @ x * 2.0)) (tensor.sum (tensor.host (w @ x)) * 2.0))
+    console.print! (tensor.at (tall @ col + 1.0) [4999] == tensor.at (tensor.host (tall @ col)) [4999] + 1.0)
+
+    // A transpose is deferred: a chain reads it where it lies, a product reads
+    // it by strides, and a transpose of it is what it was taken of.
+    let mt = tensor.transpose m;
+    let u = tensor.random 12 [60];
+    console.print! (list.all (fn k -> {
+        let i = k * 7 % 100;
+        let j = k * 13 % 60;
+        tensor.at (mt * 2.0 + tensor.transpose n + u) [i, j] ==
+            tensor.at m [j, i] * 2.0 + tensor.at n [j, i] + tensor.at u [j]
+    }) (list.range 0 200))
+    console.print! (tensor.transpose mt == m)
+    console.print! (mt == tensor.host mt)
+    console.print! (near (tensor.sum mt) (tensor.sum m))
+
+    // Operands of a product are read where they lie when they can be, and a
+    // chain feeding a product is computed into the product's own panels. The
+    // product reads the same numbers either way, so the answers are equal.
+    let wt = tensor.random 13 [150, 300] - 0.5;
+    console.print! (w @ tensor.transpose wt == tensor.host w @ tensor.host (tensor.transpose wt))
+    console.print! (tensor.transpose w @ w == tensor.host (tensor.transpose w) @ tensor.host w)
+    console.print! ((w * 2.0 - 1.0) @ x == tensor.host (w * 2.0 - 1.0) @ x)
+    console.print! (w @ tensor.relu (x + 0.25) == w @ tensor.host (tensor.relu (x + 0.25)))
+    console.print! ((tensor.transpose wt * 0.5 + 1.0) @ wt == tensor.host (tensor.transpose wt * 0.5 + 1.0) @ wt)
+    console.print! (tensor.relu ((w - 0.1) @ (x * 3.0) + bias) ==
+                    tensor.relu (tensor.host (tensor.host (w - 0.1) @ tensor.host (x * 3.0)) + bias))
+    let tall2 = tensor.random 14 [30, 5000];
+    console.print! (tensor.transpose tall2 @ col == tensor.host (tensor.transpose tall2) @ col)
+    console.print! ((col * 2.0) @ tall2 == tensor.host (col * 2.0) @ tall2)
+    console.print! (tall @ (col + 1.0) == tall @ tensor.host (col + 1.0))
+
+    // A reshape copies nothing, an outer product is a product, and a dot
+    // product of deferred vectors is a fused multiply and sum.
+    let flat = tensor.reshape [6000] m;
+    console.print! (tensor.reshape [100, 60] m @ u == tensor.host (tensor.reshape [100, 60] m) @ u)
+    console.print! (flat * 2.0 == tensor.reshape [6000] (m * 2.0))
+    let a1 = tensor.random 15 [100];
+    let b1 = tensor.random 16 [80];
+    console.print! (tensor.relu (tensor.outer a1 b1 - 0.25) == tensor.relu (tensor.host (tensor.outer a1 b1) - 0.25))
+    console.print! (tensor.at (tensor.outer a1 b1) [7, 9] == tensor.at a1 [7] * tensor.at b1 [9])
+    console.print! (near (tensor.dot (flat * 2.0) flat) (tensor.dot (tensor.host (flat * 2.0)) (tensor.host flat)))
+    console.print! (near ((flat - 1.0) @ (flat + 1.0)) (tensor.host (flat - 1.0) @ tensor.host (flat + 1.0)))
+
+    // Sums along an axis run the operand's program as they sum. Each answer
+    // adds along the axis in order, so it is exactly the plain sum written
+    // out one float at a time.
+    let along0 = tensor.sum_axis 0 (m * 2.0 + n);
+    let along1 = tensor.sum_axis 1 (m * 2.0 + n);
+    console.print! (along0 == tensor.sum_axis 0 (tensor.host (m * 2.0 + n)))
+    console.print! (tensor.at along0 [37] == list.fold (fn acc i -> acc + (tensor.at m [i, 37] * 2.0 + tensor.at n [i, 37])) 0.0 (list.range 0 60))
+    console.print! (tensor.at along1 [41] == list.fold (fn acc j -> acc + (tensor.at m [41, j] * 2.0 + tensor.at n [41, j])) 0.0 (list.range 0 100))
+    let cube = tensor.reshape [6, 10, 100] (m - n);
+    console.print! (tensor.at (tensor.sum_axis 1 cube) [4, 77] == list.fold (fn acc j -> acc + (tensor.at m [40 + j, 77] - tensor.at n [40 + j, 77])) 0.0 (list.range 0 10))
+    console.print! (tensor.sum_axis 1 (w @ x) == tensor.sum_axis 1 (tensor.host (w @ x)))
+
+    // A reduction of a product folds each tile as it is finished.
+    console.print! (near (tensor.sum (w @ x)) (tensor.sum (tensor.host (w @ x))))
+    console.print! (tensor.maximum (tensor.relu (big @ wide - 70.0)) == tensor.maximum (tensor.relu (tensor.host (big @ wide) - 70.0)))
+    console.print! (tensor.minimum (tall @ col) == tensor.minimum (tensor.host (tall @ col)))
+    console.print! (near (tensor.mean (w @ x + 1.0)) (tensor.mean (tensor.host (w @ x) + 1.0)))
+
+    // Products and moves read the numbers of a deferred operand.
+    console.print! (near (tensor.sum ((m + 0.0) @ tensor.transpose n)) (tensor.sum (m @ tensor.transpose n)))
+    console.print! (tensor.to_list (tensor.reshape [6000] (m * 1.0)) == tensor.to_list (tensor.reshape [6000] m))
+};
+
+let math_exp : :float -> :float;
+let math_exp x = tensor.at (tensor.exp (tensor.of_list [x])) [0];
+
+let math_sqrt : :float -> :float;
+let math_sqrt x = tensor.at (tensor.sqrt (tensor.of_list [x])) [0];

@@ -1,0 +1,100 @@
+// A `let` inside a function the JIT compiles.
+//
+// A compiled body has no thunks and its frame slots are registers, so a `let`
+// has nowhere to put its value. It is written where its *name is read*
+// instead, which is exactly where the interpreter would have forced the thunk
+// -- so a binding nobody reads is never evaluated, and one read once is
+// evaluated at the read. What is below is that claim, asked in the places
+// where getting it wrong shows: a binding whose value raises and is never
+// looked at, one looked at on only one path, and one looked at after something
+// else has already raised.
+//
+// Run under both tiers, which must agree. Before this, a block containing a
+// `let` refused the whole function, so every one of these was interpreted and
+// the question could not come up.
+
+import std.console;
+
+// --- the plain case --------------------------------------------------------
+let rec squares i n acc =
+    if i > n { acc } else {
+        let d = i * i;
+        squares (i + 1) n (acc + d)
+    };
+
+// --- a binding read twice, which has no thunk to remember its answer, so it
+// runs twice. Same answer, because it is pure; the rule that allows it is a
+// size limit, and this is well inside it.
+let rec twice i n acc =
+    if i > n { acc } else {
+        let d = i - 1;
+        twice (i + 1) n (acc + d * d)
+    };
+
+// --- bindings that name bindings ------------------------------------------
+let rec layered i n acc =
+    if i > n { acc } else {
+        let a = i + 1;
+        let b = a * 2;
+        let c = b - i;
+        layered (i + 1) n (acc + c)
+    };
+
+// --- a binding whose value raises, and which nothing reads -----------------
+//
+// The interpreter suspends it and never forces it, so the loop finishes. A
+// compiled body that evaluated it where it stands would raise instead, which
+// is the mistake this whole shape is arranged to catch.
+let rec ignored i n acc =
+    if i > n { acc } else {
+        let boom = i / 0;
+        ignored (i + 1) n (acc + i)
+    };
+
+// --- read on one path only -------------------------------------------------
+//
+// `boom` is only named in the arm that is never taken, so it never runs.
+let rec guarded i n acc =
+    if i > n { acc } else {
+        let boom = i / 0;
+        guarded (i + 1) n (if i > 0 { acc + i } else { acc + boom })
+    };
+
+// --- and the arm that is taken ---------------------------------------------
+let rec reached i n acc =
+    if i > n { acc } else {
+        let boom = i / 0;
+        reached (i + 1) n (if i > n { acc + i } else { acc + boom })
+    };
+
+// --- something else raises first -------------------------------------------
+//
+// The binding is read below, but the `if` above the read raises before the
+// read is reached -- so the error has to be the condition's `type_error` and
+// not the binding's `divide_by_zero`. Two different errors is the whole point:
+// one error would not say which of them happened first.
+let rec ordered i n acc =
+    if i > n { acc } else {
+        let late = i / 0;
+        if i + () > 0 { ordered (i + 1) n acc } else { ordered (i + 1) n (acc + late) }
+    };
+
+// --- a binding nobody reads whose value is fine ----------------------------
+let rec dead i n acc =
+    if i > n { acc } else {
+        let unused = i * 3;
+        dead (i + 1) n (acc + 1)
+    };
+
+let show! name v = console.print! (name + " = " + to_string (try! { strict! v } catch e { e }));
+
+let main! = {
+    show! "squares" (squares 1 20000 0);
+    show! "twice"   (twice 1 20000 0);
+    show! "layered" (layered 1 20000 0);
+    show! "ignored" (ignored 1 20000 0);
+    show! "guarded" (guarded 1 20000 0);
+    show! "reached" (reached 1 20000 0);
+    show! "ordered" (ordered 1 20000 0);
+    show! "dead"    (dead 1 20000 0);
+};

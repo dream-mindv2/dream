@@ -1,0 +1,8 @@
+squares = 2666866670000
+twice = 2666466670000
+layered = 200050000
+ignored = 200010000
+guarded = 200010000
+reached = <error :divide_by_zero division by zero>
+ordered = <error :type_error cannot apply `add` to integer 1 and unit>
+dead = 20000

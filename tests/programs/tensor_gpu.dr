@@ -1,0 +1,138 @@
+// Tensors on the GPU agree with the host.
+//
+// Every line prints `true` whether or not this machine has a GPU: with one,
+// each operation runs there and is compared with the same operation on the
+// host; without one, there is nothing to compare and the check passes. A GPU
+// holds float32, so agreement is to a relative tolerance, not to the bit.
+// The CI machine runs these through POCL, OpenCL on the CPU.
+import std.console;
+import std.tensor;
+
+let have = tensor.gpu_available ();
+
+/// The host answer `h` and the GPU answer `g`, within float32's precision.
+let close : :tensor -> :tensor -> :bool;
+let close h g = {
+    let diff = tensor.maximum (tensor.abs (h - tensor.host g));
+    let scale = tensor.maximum (tensor.abs h) + 1.0;
+    tensor.shape h == tensor.shape g && diff <= 1.0e-5 * scale
+};
+
+/// `f` on the host and on the GPU, compared.
+let agree : (:tensor -> :tensor) -> :tensor -> :bool;
+let agree f x = not have || close (f x) (f (tensor.gpu x));
+
+let agree2 : (:tensor -> :tensor -> :tensor) -> :tensor -> :tensor -> :bool;
+let agree2 f x y = not have || close (f x y) (f (tensor.gpu x) (tensor.gpu y));
+
+let near : :float -> :float -> :bool;
+let near a b = a - b <= 1.0e-4 * (a + 1.0) && b - a <= 1.0e-4 * (a + 1.0);
+
+let main! = {
+    console.print! (not have || close (tensor.random (-17) [37, 53]) (tensor.random_like (-17) (tensor.gpu (tensor.zeros [37, 53]))))
+    console.print! (not have || tensor.device (tensor.sum_tensor (tensor.gpu (tensor.ones [37, 53]))) == :gpu)
+    console.print! (not have || near 1961.0 (tensor.sum (tensor.sum_tensor (tensor.gpu (tensor.ones [37, 53])))))
+    let a = tensor.random 1 [37, 53] - 0.5;
+    let b = tensor.random 2 [53, 29] - 0.5;
+    let c = tensor.random 3 [37, 53];
+    let v = tensor.random 4 [53];
+    let w = tensor.random 5 [37];
+
+    console.print! (agree2 (fn x y -> x @ y) a b)
+    console.print! (agree2 (fn x y -> x @ y) a v)
+    console.print! (agree2 (fn x y -> x @ y) w a)
+    console.print! (agree2 (fn x y -> x + y) a c)
+    console.print! (agree2 (fn x y -> x - y) a c)
+    console.print! (agree2 (fn x y -> x * y) a c)
+    console.print! (agree2 (fn x y -> x / (y + 1.0)) a c)
+    console.print! (agree2 (fn x y -> x + y) a v)
+    console.print! (agree (fn x -> 3.0 * x - 1.0) a)
+    console.print! (agree (fn x -> 1.0 / (x + 2.0)) a)
+    console.print! (agree (fn x -> -x) a)
+    console.print! (agree (fn x -> tensor.transpose x) a)
+    console.print! (agree (fn x -> tensor.relu x) a)
+    console.print! (agree (fn x -> tensor.sigmoid x) a)
+    console.print! (agree (fn x -> tensor.tanh x) a)
+    console.print! (agree (fn x -> tensor.exp x) a)
+    console.print! (agree (fn x -> tensor.reshape [53, 37] x) a)
+    console.print! (agree (fn x -> tensor.sum_axis 0 x) a)
+    console.print! (agree (fn x -> x.[3]) a)
+    console.print! (agree2 (fn x y -> tensor.outer x y) v w)
+    console.print! (agree2 (fn x y -> tensor.relu (x @ y + 1.0)) a b)
+    console.print! (agree2 (fn x y -> tensor.sigmoid (x @ y) * 2.0 - x @ y) a v)
+    console.print! (agree2 (fn x y -> tensor.reshape [29, 37] (tensor.transpose (x @ y) * 3.0)) a b)
+    console.print! (agree2 (fn x y -> tensor.transpose x + y) a (tensor.transpose c))
+    console.print! (agree2 (fn x y -> x @ tensor.transpose y) a c)
+    console.print! (agree2 (fn x y -> tensor.relu (tensor.transpose x @ y + 0.5)) c a)
+    console.print! (agree2 (fn x y -> tensor.transpose y @ x) w a)
+    console.print! (agree2 (fn x y -> (x * 2.0 - 1.0) @ y) a b)
+    console.print! (agree2 (fn x y -> tensor.relu (x @ tensor.sigmoid (y + 0.5) - 0.1)) a b)
+    console.print! (agree2 (fn x y -> (x + 1.0) @ (y * 3.0)) a v)
+    console.print! (agree2 (fn x y -> tensor.sum_axis 0 (x * 2.0 + y)) a c)
+    console.print! (agree2 (fn x y -> tensor.sum_axis 1 (x - y)) a c)
+    console.print! (agree2 (fn x y -> tensor.relu (tensor.outer x y - 0.5)) v w)
+    console.print! (agree2 (fn x y -> tensor.reshape [53, 37] x + y) a (tensor.transpose c))
+    console.print! (not have || near (tensor.dot (v * 2.0) v) (tensor.dot (tensor.gpu v * 2.0) (tensor.gpu v)))
+    console.print! (not have || near (tensor.sum (c @ tensor.transpose c)) (tensor.sum (tensor.gpu c @ tensor.transpose (tensor.gpu c))))
+    console.print! (not have || near (tensor.sum c) (tensor.sum (tensor.gpu c)))
+    console.print! (not have || near (tensor.maximum c) (tensor.maximum (tensor.gpu c)))
+    console.print! (not have || near (tensor.minimum c) (tensor.minimum (tensor.gpu c)))
+    console.print! (not have || near (v @ v) (tensor.gpu v @ tensor.gpu v))
+    console.print! (not have || tensor.device (tensor.gpu a @ tensor.gpu b) == :gpu)
+    console.print! (not have || tensor.to_list (tensor.gpu [[1, 2], [3, 4]]) == [[1.0, 2.0], [3.0, 4.0]])
+
+    // The functions beyond the operators: comparisons, powers, roundings,
+    // folds along an axis and their positions, `repeat`, and the row
+    // operations, which on the GPU are copies and a gather.
+    console.print! (agree2 (fn x y -> tensor.max x (y - 0.5) + tensor.min x 0.1) a c)
+    console.print! (agree (fn x -> tensor.pow (tensor.abs x) 1.5) a)
+    console.print! (agree2 (fn x y -> tensor.gt x y + tensor.le x 0.0 * 2.0 + tensor.eq x x * 4.0 + tensor.ne x 0.25) a c)
+    console.print! (agree (fn x -> tensor.sign x + tensor.floor (x * 3.0) + tensor.ceil x + tensor.round (x * 5.0)) a)
+    console.print! (agree (fn x -> tensor.erf (x * 2.0)) a)
+    console.print! (agree (fn x -> tensor.max_axis 1 (x * 2.0)) a)
+    console.print! (agree (fn x -> tensor.min_axis 0 (x + 1.0)) a)
+    console.print! (agree (fn x -> tensor.argmax_axis 1 x) a)
+    console.print! (agree (fn x -> tensor.argmin_axis 0 x) a)
+    console.print! (agree (fn x -> tensor.max_axis 1 (tensor.reshape [37, 53, 1] x |> tensor.reshape [37, 1, 53])) a)
+    console.print! (agree (fn x -> x - tensor.repeat 53 (tensor.max_axis 1 x)) a)
+    console.print! (agree (fn x -> tensor.exp (x - tensor.repeat 53 (tensor.max_axis 1 x)) @ tensor.transpose x) a)
+    console.print! (agree (fn x -> tensor.fill_like x 2.5 * x) a)
+    console.print! (agree (fn x -> tensor.slice 3 10 x) a)
+    console.print! (agree (fn x -> tensor.take [5, 2, 2, 36, 0] x) a)
+    console.print! (agree (fn x -> tensor.concat [x, tensor.slice 0 3 x, x * 2.0]) a)
+    let imgs = tensor.random 6 [2, 7, 9, 3] - 0.5;
+    console.print! (agree (fn x -> tensor.im2col 3 3 1 1 x) imgs)
+    console.print! (agree (fn x -> tensor.im2col 2 3 2 0 x) imgs)
+    console.print! (agree (fn x -> tensor.col2im [2, 7, 9, 3] 3 3 1 1 (tensor.im2col 3 3 1 1 x)) imgs)
+    console.print! (agree (fn x -> tensor.col2im [2, 7, 9, 3] 2 3 2 0 (tensor.im2col 2 3 2 0 x * 2.0)) imgs)
+    let qa = tensor.random 7 [6, 19, 23] - 0.5;
+    let qb = tensor.random 8 [6, 23, 17] - 0.5;
+    console.print! (agree2 (fn x y -> x @ y) qa qb)
+    console.print! (agree2 (fn x y -> tensor.relu (x @ y) * 2.0) qa (tensor.random 9 [23, 11]))
+    console.print! (agree (fn x -> tensor.permute [0, 2, 1] x) qa)
+    console.print! (agree (fn x -> tensor.permute [2, 0, 3, 1] (tensor.reshape [6, 19, 23, 1] x * 3.0)) qa)
+    // A long K and a small answer: the product is cut along K and its
+    // partial products added ("split-K" at `gpu::matmul`). Plain, with a
+    // chain after it, read through a transpose, and with a computed operand.
+    let tall = tensor.random 10 [20000, 9] - 0.5;
+    let wide = tensor.random 11 [20000, 32] - 0.5;
+    console.print! (agree2 (fn x y -> tensor.transpose x @ y) tall wide)
+    console.print! (agree2 (fn x y -> tensor.relu (tensor.transpose x @ y - 0.1) * 2.0) tall wide)
+    console.print! (agree2 (fn x y -> tensor.transpose x @ (y * 2.0 + 1.0)) tall wide)
+    console.print! (agree2 (fn x y -> tensor.reshape [1, 20000] (tensor.sum_axis 1 x) @ y) tall wide)
+    // A long axis with few answers is folded in slices and the partials
+    // folded again: down the rows, along the last axis, through a middle one.
+    console.print! (agree (fn x -> tensor.sum_axis 0 (x * 2.0 - 1.0)) tall)
+    console.print! (agree (fn x -> tensor.max_axis 0 x) tall)
+    console.print! (agree (fn x -> tensor.min_axis 1 (tensor.transpose x)) tall)
+    console.print! (agree (fn x -> tensor.sum_axis 1 (tensor.reshape [3, 20000, 3] x)) tall)
+    // Float64 on the device, where it has it: the products are the same
+    // kernels built for doubles, and agree with the host far more closely.
+    let f64 = have && tensor.dtype (tensor.gpu64 [1.0]) == :f64;
+    let close64 h g = tensor.maximum (tensor.abs (h - tensor.host g)) <= 1.0e-9 * (tensor.maximum (tensor.abs h) + 1.0);
+    console.print! (not f64 || close64 (a @ b) (tensor.gpu64 a @ tensor.gpu64 b))
+    console.print! (not f64 || close64 (tensor.relu (tensor.transpose tall @ wide)) (tensor.relu (tensor.transpose (tensor.gpu64 tall) @ tensor.gpu64 wide)))
+    console.print! (not f64 || close64 (qa @ qb) (tensor.gpu64 qa @ tensor.gpu64 qb))
+    console.print! (not have || tensor.argmax_axis 0 (tensor.gpu [3, 9, 9, 2]) == 1)
+    console.print! (not have || tensor.device (tensor.take [1, 0] (tensor.gpu a)) == :gpu)
+};

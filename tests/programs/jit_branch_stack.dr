@@ -1,0 +1,10 @@
+// Branching recursion keeps its evaluation order and falls back to heap
+// continuations before generated calls exhaust the small worker stack.
+import std.console;
+
+let rec fork n = if n <= 0 { 1 } else { fork (n - 1) + fork 0 };
+
+let main! = {
+    console.print! (fork 30000)
+    console.print! (join! (spawn! $(fork 10000)))
+};

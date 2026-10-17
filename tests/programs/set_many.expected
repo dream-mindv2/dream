@@ -1,0 +1,16 @@
+Person("test", 23, 2)
+Person("x", 1, 1)
+Person("x", 6, 1)
+7
+:caught
+Person("x", 20001, 1)
+#[9, 2, 8]
+:out_of_bounds
+[9, 2, 8]
+:out_of_bounds
+3
+["localhost", 443, true]
+[:c, :b, :new, :d, 360, 2001]
+[30, 17000, :absent, 2000]
+true
+:type_error

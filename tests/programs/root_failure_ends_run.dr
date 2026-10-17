@@ -1,0 +1,19 @@
+// An error `main!` does not catch ends the program, even with a process it
+// started still alive. That process here is asleep on a timer, which the
+// deadlock check rightly does not call stuck; the run used to wait for it,
+// and a program whose other processes never end -- a registry, a listener --
+// printed nothing and never exited (`Scheduler::finish`). If this regresses,
+// the sleeper wakes and says so, and the output is wrong rather than late.
+import std.console;
+import std.proc;
+
+let outlive! u = {
+    proc.sleep! 5000
+    console.print! "the sleeper outlived main"
+};
+
+let main! = {
+    spawn! $( outlive! () );
+    console.print! "main is about to raise"
+    raise! :main_gave_up
+};

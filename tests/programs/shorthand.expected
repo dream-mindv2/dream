@@ -1,0 +1,35 @@
+Result.ok(5)
+Option.some(5)
+Result.ok(9)
+Option.some(10)
+0
+0
+[2, 4]
+#[2, 4]
+6
+6
+3
+[2, 3]
+#[2, 3]
+Result.ok(8)
+Result.ok(5)
+[Option.some(1), Option.some(2)]
+Result.ok(9)
+49995000
+7
+7
+:divide_by_zero
+:divide_by_zero
+1
+Result.ok("next")
+Result.ok(7)
+Option.some("next")
+Option.some(7)
+Result.ok(1)
+Option.some(1)
+Option.some(1)
+Option.some(5)
+Result.ok("bad!")
+Option.some(1)
+Option.none
+Option.none

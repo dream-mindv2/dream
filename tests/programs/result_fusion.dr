@@ -1,0 +1,52 @@
+import std.console;
+
+let inc x = x + 1;
+let twice x = x * 2;
+let divide x = 1 / x;
+// The callee is a parameter here, so this retains the library implementation.
+let call f x = f x;
+let reference r = call (Result.map twice) (call (Result.map inc) r);
+let fused r = Result.map twice (Result.map inc r);
+let recover r = Result.map inc (Result.or_else (fn e -> Result.ok e) (Result.map_error twice r));
+let option o = Option.unwrap_or 99 (Option.map twice (Option.map inc o));
+let alias_map = Result.map;
+let m = Result.map;
+
+mod Shadow {
+    union Result { ok(x), error(e)
+        map f r = Result.ok 777
+    }
+    let value = Result.map inc (Result.error 1);
+}
+
+let main! = {
+    console.print! [fused (Result.ok 3) == reference (Result.ok 3),
+                    fused (Result.error 7) == reference (Result.error 7)]
+    console.print! (Result.unwrap_or 0 (Result.map twice (Result.map inc (Result.ok 3))))
+    console.print! (Result.unwrap_or 9 (Result.map (fn x -> divide 0) (Result.error :bad)))
+    console.print! [recover (Result.ok 3), recover (Result.error 5)]
+    console.print! (Result.and_then (fn x -> Result.ok (x + 1)) (Result.error :bad))
+    console.print! (Result.unwrap_or 9 (Result.and_then (fn x -> Result.error :bad) (Result.map inc (Result.ok 3))))
+    console.print! (Result.unwrap_or_else twice (Result.map_error inc (Result.error 3)))
+    console.print! (Result.otherwise (Result.ok (divide 0)) (Result.ok 6))
+    console.print! (Result.flatten (Result.ok (Result.ok 4)))
+    console.print! [option (Option.some 3), option Option.none]
+    console.print! (Option.unwrap_or_else (fn _ -> 42) (Option.map inc Option.none))
+    console.print! (Option.and_then (fn x -> Option.some (x + 1)) (Option.some 3))
+    console.print! (Option.flatten (Option.some (Option.some 4)))
+    console.print! (Result.ok 3 |> Result.map inc |> Result.map twice |> Result.unwrap_or 0)
+    console.print! (alias_map inc (Result.ok 5))
+    console.print! Shadow.value
+    // A callback's lazy answer still reads the input after the next branch.
+    console.print! (Result.unwrap_or 0 (Result.map twice (Result.and_then (fn x -> Result.ok (x + 1)) (Result.ok 3))))
+    console.print! (Result.and_then (fn x -> Result.ok (x + 1)) (Result.ok 3) |> Result.map twice |> Result.unwrap_or 0)
+    console.print! (Option.and_then (fn x -> Option.some (x + 1)) (Option.some 3) |> Option.map twice |> Option.unwrap_or 0)
+    console.print! (Result.unwrap_or 0 (Result.map twice (Result.flatten (Result.ok (Result.ok 3)))))
+    console.print! (Result.unwrap_or 0 (Result.map twice (Result.otherwise (Result.ok 3) (Result.error :bad))))
+    // Mapping never demands an unused payload, even across a callback.
+    console.print! (Result.unwrap_or 0 (Result.map (fn _ -> 7) (Result.and_then (fn x -> Result.ok (x + 1)) (Result.ok (divide 0)))))
+    let saved = Result.map inc (Result.ok 10);
+    let other = Result.map twice (Result.ok 20);
+    console.print! [saved, other, saved]
+    console.print! ((m (fn x -> %{ :key => x + 1 }) (Result.ok 3) |> Result.unwrap_or (%{})).[:key else 99])
+}

@@ -1,0 +1,38 @@
+// Interpreter/JIT parity for a remembered binding suspended while compiled
+// code is still computing it (see "A binding computed once" in
+// dream/src/jit.cpp). `run` is read twice in `tower`: evaluated, for
+// `combine`'s first argument, and lazily, for its second. Computing it hands
+// `tower (d - 1)` to `step` -- a loop, which the tier calls through the
+// machine with its arguments suspended -- and that suspension makes the
+// iteration's snapshot halfway through computing `run`. The snapshot's thunk
+// of `run` used to be left unsettled, so the lazy read ran `run` again and
+// built a second tower one level down, at every level.
+//
+// The answer is the same either way, so the test is about sharing: each level
+// holds its two halves, and `shared` asks that they be equal. Shared, they are
+// the same value and the comparison is immediate; duplicated, every level
+// compares two towers built separately, and `jit_settle.env`'s small heap runs
+// out long before that finishes.
+import std.console;
+import std.list;
+
+let rec step n t = if n <= 0 { [t, t] } else { step (n - 1) t };
+
+let combine a b = if len a >= 0 { [a, b] } else { [] };
+
+let rec tower d =
+    if d <= 0 { [] }
+    else {
+        let run = match d % 3 { 7 => [[], []], _ => step 1 (tower (d - 1)) };
+        combine (list.head run) (list.nth 1 run)
+    };
+
+let rec shared t = list.is_empty t || (t.[0] == t.[1] && shared t.[0]);
+
+let rec depth t = if list.is_empty t { 0 } else { 1 + depth t.[0] };
+
+let main! = {
+    let t = tower 60;
+    console.print! (shared t)
+    console.print! (depth t)
+}

@@ -1,0 +1,90 @@
+// A `match` that starts with a switch.
+//
+// When enough arms name a tag -- `[:name, ..]` or `:empty` -- the compiler puts
+// a switch in front of the chain of arm tests and jumps into it at the first
+// arm that could match (`dispatch` in dreams/src/lower.dr). Every target is a
+// suffix of the ordinary chain, so the answer must be exactly what the chain
+// alone gives. These are the cases where a jump could get that wrong:
+//
+//   * an arm that names the tag but does not match -- the wrong length, a
+//     guard that says no -- must fall through to the arms below it;
+//   * an arm that matches anything, written between tagged arms, must still
+//     win over the tagged arms after it;
+//   * a subject that is not a cell, a cell whose head is not an atom, and a
+//     cell whose head is an atom no arm names;
+//   * cells and bare atoms in one `match`, as a union with nullary variants is;
+//   * a head that raises when forced, which the chain forces first too;
+//   * a `match` whose first arm matches anything, where no head may be forced;
+//   * nothing matching at all.
+
+import std.console;
+
+let kind v = match v {
+    :empty => "empty",
+    :none => "none",
+    [:circle, r] => "circle " + to_string r,
+    [:square, s] if s > 10 => "big square",
+    [:square, s] => "square " + to_string s,
+    [:rect, w, h] => "rect " + to_string (w * h),
+    [:rect, w] => "half rect " + to_string w,
+    [:tri, ..rest] => "tri of " + to_string (len rest),
+    :other => "other",
+    [x, y] => "pair " + to_string x,
+    [:named, _] as whole => "named " + to_string (len whole),
+    _ => "something else",
+};
+
+// A catch-all between tagged arms: `[:b, ..]` must reach it, not the later arm.
+let order v = match v {
+    [:a, x] => "a " + to_string x,
+    [:b, 1] => "b one",
+    [:c] => "c",
+    _ => "fallback",
+    [:b, x] => "never",
+};
+
+// The first arm matches anything, so nothing may force a head in front of it.
+let lazy_head v = match v {
+    [x, ..rest] => "cell",
+    [:p] => "p",
+    [:q] => "q",
+    [:r] => "r",
+    _ => "not a cell",
+};
+
+let strict_tags v = match v {
+    [:a] => 1,
+    [:b] => 2,
+    [:c] => 3,
+};
+
+let main! = {
+    console.print! (kind :empty)
+    console.print! (kind :none)
+    console.print! (kind :other)
+    console.print! (kind [:circle, 2])
+    console.print! (kind [:square, 20])
+    console.print! (kind [:square, 3])
+    console.print! (kind [:rect, 2, 3])
+    console.print! (kind [:rect, 4])
+    console.print! (kind [:tri, 1, 2, 3])
+    console.print! (kind [:named, 1])
+    console.print! (kind [:circle, 1, 2])
+    console.print! (kind [1, 2])
+    console.print! (kind ["circle", 2])
+    console.print! (kind [:unknown, 2])
+    console.print! (kind [])
+    console.print! (kind 42)
+    console.print! (kind :stranger)
+    console.print! (order [:a, 5])
+    console.print! (order [:b, 1])
+    console.print! (order [:b, 2])
+    console.print! (order [:c])
+    console.print! (order :c)
+    console.print! (lazy_head [1 / 0, 2])
+    console.print! (lazy_head [])
+    console.print! (strict_tags [:c])
+    console.print! (try! { strict_tags [:d] } catch e { e })
+    console.print! (try! { strict_tags [1 / 0] } catch e { e })
+    console.print! (try! { strict_tags 7 } catch e { e })
+};

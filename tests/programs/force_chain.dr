@@ -1,0 +1,45 @@
+// Forcing a long chain of suspensions must raise, not crash, in either tier.
+//
+// `acc` here is lazy and nothing ever forces it until the end, so the loop
+// builds a chain of suspended applications rather than adding anything -- the
+// trap `list.fold_strict` exists to avoid, and its note in
+// [mind/std/src/list.dr](mind/std/src/list.dr) explains it. The point of the file is
+// what happens when that chain is finally forced.
+//
+// The interpreter forces a slot by pushing a *continuation*, so its recursion
+// is on the heap and its limit is a number it can check: it raises at
+// `DREAM_MAX_DEPTH`. Compiled code forces a slot by *calling* -- `load_slot`,
+// `dream_rt_force`, `force_whnf`, which runs a whole nested machine loop, which
+// re-enters the compiled body for the next link -- so its recursion is one C++
+// frame per link against a fixed machine stack. That segfaulted, a long way
+// from anything the program wrote, where the interpreter raised cleanly; the
+// two tiers disagreeing about a crash is the sharpest disagreement there is.
+//
+// `Process::force_nest` is what fixes it: past a bound, `enter_function` stops
+// offering the compiled tier and the interpreter finishes the chain on the
+// heap, where the limit can be enforced. So this file is a tier-agreement test
+// and the e2e harness, which runs every program both ways, is what asserts it.
+//
+// `force_chain.env` sets a small depth limit so this costs a fraction of a
+// second. The chain has to be long enough to have overflowed the machine stack
+// before the fix -- 200,000 links is comfortably past the roughly 16,000 that
+// eight megabytes of stack allowed -- and longer than the limit, so that what
+// is being compared is which error comes back rather than whether one does.
+//
+// The lambda is the trigger and not incidental: `fn a b -> a + b` is arithmetic
+// over two strict parameters, which is precisely the shape this tier compiles.
+import std.console;
+
+let rec loop_f f i n acc = if i > n { acc } else { loop_f f (i + 1) n (f acc i) };
+
+let main! = {
+    console.print! ("chain:  " + to_string (try! { loop_f (fn a b -> a + b) 1 200000 0 } catch e { e }))
+
+    // A chain short enough to finish still finishes, and still adds up -- the
+    // bound must decline the compiled tier without changing any answer.
+    console.print! ("short:  " + to_string (loop_f (fn a b -> a + b) 1 1000 0))
+
+    // And the process that overflowed is the only casualty: the runtime carries
+    // on, which is the same promise `runaway.dr` makes about the interpreter.
+    console.print! ("after:  " + to_string (join! (spawn! $( 6 * 7 ))))
+};

@@ -1,0 +1,36 @@
+// The same library found as a system library rather than carried: `run.sh`
+// builds `libsample.so` into a directory of its own and runs this with that
+// directory on `$DREAM_LIBRARY_PATH`, then with `$DREAM_LIB_SAMPLE` naming
+// the file, then with neither -- when the search must fail and say where it
+// looked. So this checks the VM's half of `foreign.system`: the names, the
+// two variables, and the account of what was tried.
+
+import std.console;
+import std.foreign;
+import std.str;
+
+foreign sample from system "sample" {
+    low_byte : :u32 -> :u8
+    scale : :f32 -> :double -> :double
+}
+
+let main! = {
+    let found = foreign.locate! (foreign.system "sample");
+    match found {
+        Result.ok(file) => {
+            console.print! ("found " + (if str.ends_with "libsample.so" file { "libsample.so" } else { file }))
+            console.print! (to_string (sample.low_byte 513))
+            console.print! (to_string (sample.scale 1.5 2.0))
+        },
+        Result.error(why) => {
+            console.print! (if str.contains_str "cannot find the C library `sample`" why { "not found" } else { why })
+            console.print! (if str.contains_str "$DREAM_LIB_SAMPLE" why { "says what to set" } else { why })
+        },
+    }
+    // A chain answers its first that opens, and the missing payload before
+    // it is not an error.
+    match foreign.locate! (foreign.any_of [foreign.embedded "absent", foreign.this_program]) {
+        Result.ok(_) => console.print! "any_of takes the first that opens",
+        Result.error(why) => console.print! why,
+    }
+};

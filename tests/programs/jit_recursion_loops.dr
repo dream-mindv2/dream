@@ -1,0 +1,19 @@
+// Recursive forms that need no machine call per level. Keep the worker stack
+// small, run far beyond it, and check that their IR has no recursive body.
+import std.console;
+
+let rec tail_sum n !acc =
+    if n <= 0 { acc } else { tail_sum (n - 1) (acc + n) };
+
+let rec count_down n = if n <= 0 { 0 } else { 1 + count_down (n - 1) };
+
+let rec through_let n = if n <= 0 { 42 } else {
+    let result = through_let (n - 1);
+    result
+};
+
+let main! = {
+    console.print! (tail_sum 200000 0)
+    console.print! (count_down 20000)
+    console.print! (through_let 200000)
+};

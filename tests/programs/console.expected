@@ -1,0 +1,10 @@
+one
+two:   42
+many:  1 2 [4, 5]
+forced: 120 :atom c
+split: abc
+720
+line:  true
+indirect: 7
+a
+<error :not_a_function unit is not a function>

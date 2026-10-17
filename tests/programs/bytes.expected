@@ -1,0 +1,11 @@
+every byte 0..255 -> 256
+  as UTF-8 instead -> 384
+byte 0   -> 0
+byte 128 -> 128
+byte 255 -> 255
+embedded NUL -> 3
+round trip -> true
+little-endian 0x12345678 -> [120, 86, 52, 18]
+empty -> 0
+not a byte -> <error :type_error str_of_bytes needs bytes in 0..255, got 256>
+not an integer -> <error :type_error str_of_bytes needs a list of integers>

@@ -1,0 +1,66 @@
+tensor[[6, 8], [10, 12]]
+tensor[[-4, -4], [-4, -4]]
+tensor[[5, 12], [21, 32]]
+tensor[[5, 3], [2.3333333333333335, 2]]
+tensor[[0, 0], [1, 0]]
+tensor[[2, 4], [6, 8]]
+tensor[[0.5, 1], [1.5, 2]]
+tensor[[9, 8], [7, 6]]
+tensor[[-1, -2], [-3, -4]]
+tensor[[2, 4], [4, 6]]
+tensor[[1, 4], [3, 8]]
+tensor[[19, 22], [43, 50]]
+tensor[5, 11]
+tensor[7, 10]
+5
+32
+tensor[1, 2]
+tensor[[85, 126], [193, 286]]
+tensor[[8, 12], [18, 26]]
+32
+true
+tensor[[3, 4, 5], [6, 8, 10]]
+tensor[3, 4]
+3
+()
+2
+:tensor
+[2, 3, 4]
+[2, 4]
+3
+[[1, 2], [3, 4]]
+[:host, :f64]
+tensor[[1, 4], [2, 5], [3, 6]]
+tensor[1, 2, 3, 4]
+tensor[[[1, 2]], [[3, 4]]]
+[26, 6.5, 5, 8]
+5
+[tensor[4, 6], tensor[3, 7]]
+tensor[[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+tensor[[1.5, 1.5], [1.5, 1.5]]
+tensor[0, 1, 2, 3]
+true
+false
+true
+tensor[0, 0, 2]
+tensor[1, 2, 3]
+tensor[1, 2]
+tensor[0.5]
+tensor[1]
+true
+false
+false
+-1
+-1
+tensor[1, 2]
+tensor of shape [100, 100]
+:shape_error
+:shape_error
+:type_error
+:shape_error
+:type_error
+:shape_error
+:shape_error
+:out_of_bounds
+:out_of_bounds
+:shape_error

@@ -1,0 +1,14 @@
+// Compiled by the portable compiler on Android, then run on that device.
+import std.console;
+import std.os;
+
+foreign libc from system "c" {
+    strlen : :cstr -> :size
+}
+
+let main! = {
+    console.print! (os.platform () == :android)
+    console.print! (libc.strlen "hello" == 5)
+    let child = os.exec_in! "/" "/system/bin/sh" ["-c", "pwd"] 0;
+    console.print! (child.[:code] == 0 && child.[:out] == "/\n")
+};

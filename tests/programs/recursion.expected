@@ -1,0 +1,6 @@
+tail:     0
+non-tail: 5000050000
+fac 20:   2432902008176640000
+mixed:    500
+deopted:  20001
+raised:   <error :divide_by_zero division by zero>

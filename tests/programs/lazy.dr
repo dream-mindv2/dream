@@ -1,0 +1,37 @@
+// Laziness is observable: each of these would raise if the VM evaluated more
+// than it had to.
+import std.console;
+
+let boom n = 1 / 0;
+
+let main! = {
+    // An unused binding is never forced.
+    let unused = boom 1;
+    console.print! ("unused binding: " + to_string :never_forced)
+
+    // `if` enters one branch only.
+    let picked = if true { :taken } else { boom 2 };
+    console.print! ("if branch:     " + to_string picked)
+
+    // `&&` and `||` short-circuit.
+    console.print! ("short circuit: " + to_string (false && (boom 3) == 1))
+    console.print! ("short circuit: " + to_string (true || (boom 4) == 1))
+
+    // List elements stay unevaluated: `len` walks the spine, not the values.
+    console.print! ("lazy elements: " + to_string (len [boom 5, boom 6, boom 7]))
+
+    // A map's values are lazy too, though its keys are forced to be hashed.
+    console.print! ("lazy map:      " + to_string (len %{ :a => boom 8, :b => boom 9 }))
+
+    // Array elements are lazy too.
+    console.print! ("lazy array:    " + to_string (len #[boom 10, boom 11]))
+
+    // ...but an accessor must hand back a *forced* element. A native's return
+    // value goes straight into the machine's result, which is taken to be in
+    // weak head normal form, so returning the raw slot would leak a thunk into
+    // whatever used it -- and the leak only shows up on an operator that
+    // inspects its operand's type, like ordering two strings.
+    console.print! ("array_get:     " + to_string ((#["bbb", "a"]).[0] < "zzz"))
+    console.print! ("map_get:       " + to_string ((%{ :k => "bbb" }).[:k else "zzz"] < "zzz"))
+    console.print! ("map_get miss:  " + to_string ((%{ :k => "bbb" }).[:absent else "aaa"] < "zzz"))
+}

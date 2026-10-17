@@ -1,0 +1,17 @@
+import std.console;
+
+let calc : :integer -> :integer -> :integer;
+let calc x y = (x + y) * (x - y);
+let loose x y = calc x y;
+let sum : :integer -> :integer -> :integer;
+let rec sum n acc = if n == 0 { acc } else { sum (n - 1) (acc + n) };
+let loose_sum n acc = sum n acc;
+let main! = {
+    console.print! (calc 8 3)
+    console.print! (loose 8.0 3.0)
+    console.print! (loose 4611686018427387903 1)
+    console.print! (sum 12000 0)
+    console.print! (loose_sum 3 0.5)
+    console.print! (try! { loose true 1 } catch _ { 99 })
+    console.print! (try! { loose (1 / 0) (true + 1) } catch e { e })
+};

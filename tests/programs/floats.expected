@@ -1,0 +1,19 @@
+pi:        0.7853969133974404
+halves:    100000
+from_int:  50000
+mixed:     19999900000
+wrap:      1
+roots:     59628255.58540428
+floors:    6666566667
+absum:     19999900000
+ints:      9999900000
+halve_sum: 2
+nan_order: 200000
+negate:    1.5
+zero:      0
+warm:      1.0715086071862673e+301
+not a num: <error :type_error cannot apply `mul` to a string and a float>
+bad acc:   <error :type_error cannot apply `add` to a string and a float>
+to_float:  <error :type_error to_float needs a number>
+div zero:  <error :divide_by_zero division by zero>
+inf:       inf

@@ -1,0 +1,20 @@
+import std.console;
+
+let first xs ignored = xs.[0];
+let at index xs = xs.[index else :missing];
+let last xs = xs.[1];
+let ignore x = 42;
+let main! = {
+    let xs = #[7, 1 / 0];
+    // Materialize the array without forcing its unused element.
+    console.print! xs.[0]
+    console.print! (first xs (1 / 0))
+    console.print! (at 0 xs)
+    console.print! (at 9 xs)
+    console.print! (at (0 - 1) xs)
+    console.print! (ignore (last xs))
+    console.print! (try! { last xs } catch e { :caught })
+    // Non-array inputs and suspended keys keep the ordinary call behavior.
+    console.print! (at (0 + 1) [10, 20])
+    console.print! (try! { at (1 / 0) xs } catch e { :caught })
+};

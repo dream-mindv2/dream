@@ -1,0 +1,71 @@
+// `strict!` walking a structure while the heap collects underneath it.
+//
+// `force_deep` is the walk `strict!` runs, and it walks a list and an array
+// *in place*: it forces each element and stores the result back into the cell
+// or the slot it came from. The container waits on the value stack while that
+// force runs, which is the whole reason it is kept there -- a collection can
+// find it and move it, and what is on the value stack is what a collection
+// rewrites.
+//
+// It was then used from a C++ local anyway. `force_deep` read the cell once
+// per turn round its loop and used that pointer on *both* sides of the force,
+// so a collection during the force left it naming the block the cell had moved
+// out of, and the store that followed went into whatever had since been
+// recycled into that block. `ConsObj::head` and `ThunkObj::node` share an
+// offset, so the shape the damage took was a thunk whose node was the low half
+// of a pointer; the machine jumped to it some thousands of reductions later
+// and died a long way from the mistake. It reached the language server about
+// eight runs in ten and nothing else, because the timing had to be right.
+//
+// The window only opened when `strict!` began to vouch (`VouchesForGc`):
+// before that nothing underneath a deep force could collect at all, so a
+// pointer held across one was safe by accident. This is the program that says
+// the walk re-reads its container instead.
+//
+// So: force deeply, with elements whose forcing allocates, and a nursery
+// (`strict_collect.env`) small enough that the walk collects many times on the
+// way along. The checksums are what a stale store would change; the crash is
+// what it did instead of changing them.
+import std.array;
+import std.console;
+
+import std.list;
+import std.str;
+
+let show! label v = { console.print! (label + to_string v) };
+
+/// Lazy in the tail and allocating in the head: forcing one element builds a
+/// string, so the nursery fills while `force_deep` is part-way along.
+let rec pieces n =
+    if n == 0 { [] }
+    else { _list_cons (str.repeat (n % 7 + 1) "ab") (pieces (n - 1)) };
+
+/// The lengths of every element, added up. Reading this *after* the deep force
+/// is what notices a head that was stored somewhere other than the cell the
+/// list still points at.
+let total xs = list.fold (fn acc s -> acc + len s) 0 xs;
+
+let main! = {
+    // A list, forced deeply and then read. `strict!` answers the same list it
+    // was given, so both names below are the same structure.
+    let one = strict! (pieces 4000);
+    show! "list total:     " (total one)
+    show! "list length:    " (list.length one)
+
+    // A list of lists: the walk recurses, and the outer cell is on the value
+    // stack across a force that is itself a whole walk.
+    let nested = strict! (list.map (fn n -> pieces (n % 40)) (list.range 1 300));
+    show! "nested total:   " (list.fold (fn acc xs -> acc + total xs) 0 nested)
+
+    // An array, which `force_deep` walks by index rather than by chasing a
+    // tail, and which has the same rule about its pointer.
+    let arr = strict! (array.of_list (pieces 3000));
+    show! "array total:    " (array.fold (fn acc s -> acc + len s) 0 arr)
+    show! "array length:   " (len arr)
+
+    // Sharing has to survive it too: the same list reached twice is deeply
+    // forced once, and the second read must find what the first one wrote.
+    let shared = pieces 2000;
+    let pair = strict! [shared, shared];
+    show! "shared agree:   " (total (pair.[0]) == total (((_list_tail pair)).[0]))
+};

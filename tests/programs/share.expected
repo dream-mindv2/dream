@@ -1,0 +1,8 @@
+the same value:  true
+forced first:    [0, 1, 4, 9, 16, 25, 36, 49, 64, 81]
+in a child:      [3998000, :changed, [7, "7", 14]]
+still the same:  [7, "7", 14]
+four at once:    [249500, 999000, 2248500, 3998000]
+after churn:     [true, "1999"]
+shared again:    [3, "3", 6]
+a closure:       :type_error

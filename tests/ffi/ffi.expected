@@ -1,0 +1,61 @@
+-- scalars
+5
+[0, 3, 2]
+[-1, 0, 0]
+3
+255
+-5
+hello, world
+3
+-- ownership
+sample.Counter
+15
+15
+cursor1,counter1
+[false, false]
+<error :ffi_error argument 1 of `cursor_read`: the `sample.Cursor` handle 2 has been released, or belongs to another process>
+<error :ffi_error release!: the `sample.Counter` handle 1 has been released, or belongs to another process>
+<error :ffi_error argument 1 of `counter_add`: expected a `sample.Counter` handle, not a `sample.Cursor` one>
+<error :ffi_error argument 1 of `counter_add`: the `sample.Counter` handle 424242 has been released, or belongs to another process>
+()
+[0, "sample.Counter"]
+[-1, ()]
+["sample.Counter", "sample.Cursor", "sample.Counter"]
+-- using!
+100
+<error :error :from_inside>
+counter4,counter5
+-- callbacks
+385
+18
+[9, 7, 5, 3, 1]
+<error :divide_by_zero division by zero>
+<error :ffi_error argument 3 of `sort_ints`: a callback must be a pure function: C cannot wait while it performs an effect>
+-- memory
+[24, 24]
+[[:align, 8], [:fields, [[:tag, [16, :u8]], [:x, [0, :i32]], [:y, [8, :double]]]], [:order, [:x, :y, :tag]], [:size, 24]]
+[[:tag, 7], [:x, 3], [:y, 1.5]]
+18.5
+8
+[4, "abc", "bc"]
+<error :ffi_error peek!: 4 bytes at 2 is outside a buffer of 4>
+<error :ffi_error write!: 2 bytes at 3 is outside a buffer of 4>
+()
+-- processes
+:done
+counter8,cursor7,counter7
+<error :error :boom>
+counter9
+<error :ffi_error argument 1 of `counter_add`: the `sample.Counter` handle 16 has been released, or belongs to another process>
+-- a library server
+sample.Counter
+7
+7
+<error :ffi_error argument 1 of `counter_add`: the `sample.Counter` handle 17 has been released, or belongs to another process>
+<error :ffi_error argument 1 of `counter_add`: expected a `sample.Counter` handle, not a `sample.Cursor` one>
+10
+77
+["sample.Counter", "sample.Cursor", "buffer"]
+false
+cursor11,counter11
+2

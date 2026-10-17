@@ -1,0 +1,8 @@
+()
+:list
+true
+1
+true
+true
+true
+["sqrt", "abs", "floor", "exp", "log", "sin", "cos", "tan", "tanh", "atan", "pow"]

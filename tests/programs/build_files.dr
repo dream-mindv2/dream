@@ -1,0 +1,73 @@
+// What a build asks of the file system: stamps, digests, links, copies and
+// trees. See "Running a plan" in docs/build.md for why each one is a native.
+import std.console;
+import std.error;
+import std.io;
+import std.list;
+import std.os;
+import std.str;
+
+let write_file! path text = {
+    let h = io.open! path :write;
+    io.write! h text
+    io.close! h
+};
+
+let main! = {
+    let root = "/tmp/dream-build-files-" + to_string (os.pid! ());
+    io.remove_all! root
+    console.print! (io.stat! root)
+
+    io.mkdir_all! (root + "/a/b")
+    io.mkdir_all! (root + "/a/b")
+    console.print! (list.nth 2 (io.stat! root))
+
+    // The standard's own examples, and one long enough to take several
+    // blocks, checked against `sha256sum`.
+    console.print! (io.digest "abc")
+    console.print! (io.digest "")
+    let long = str.repeat 300 "dream ";
+    write_file! (root + "/a/b/long.txt") long
+    let theirs = list.head (str.split " " (os.exec! "sha256sum" [root + "/a/b/long.txt"]).[:out]);
+    console.print! [io.digest long == theirs, io.digest! (root + "/a/b/long.txt") == theirs]
+
+    let [size, modified, kind] = io.stat! (root + "/a/b/long.txt");
+    console.print! [kind, size, modified > 0]
+
+    // A link is the same file under another name, and must be new.
+    write_file! (root + "/top.txt") "top"
+    console.print! (io.link! (root + "/top.txt") (root + "/a/top-link.txt"))
+    console.print! (io.digest! (root + "/a/top-link.txt") == io.digest "top")
+    console.print! (try! { io.link! (root + "/top.txt") (root + "/a/top-link.txt") } catch e { :already_there })
+
+    // A copy is a file of its own: changing it leaves what it came from alone.
+    io.copy! (root + "/top.txt") (root + "/a/top-copy.txt")
+    write_file! (root + "/a/top-copy.txt") "changed"
+    console.print! (io.digest! (root + "/top.txt") == io.digest "top")
+
+    io.chmod! (root + "/top.txt") 493
+    console.print! (os.exec! "test" ["-x", root + "/top.txt"]).[:code]
+
+    // Permissions read back as they were set, and nothing there is `()`.
+    console.print! (io.mode! (root + "/top.txt"))
+    io.chmod! (root + "/top.txt") 0o640
+    console.print! [io.mode! (root + "/top.txt"), io.mode! (root + "/none")]
+
+    // A symbolic link holds its target as written, read from the link's own
+    // directory; `stat!` follows it and `lstat!` does not.
+    io.symlink! "top.txt" (root + "/top-sym")
+    console.print! [io.is_link! (root + "/top-sym"), io.is_link! (root + "/top.txt")]
+    console.print! (io.read_link! (root + "/top-sym"))
+    console.print! [list.nth 2 (io.stat! (root + "/top-sym")), list.head (io.lstat! (root + "/top-sym")), list.nth 2 (io.lstat! (root + "/top-sym"))]
+    console.print! (io.lstat! (root + "/top.txt") == io.stat! (root + "/top.txt"))
+    io.symlink! "gone" (root + "/dangling")
+    console.print! [io.stat! (root + "/dangling"), list.nth 2 (io.lstat! (root + "/dangling")), io.lstat! (root + "/none")]
+    io.symlink! "a" (root + "/a-sym")
+    console.print! [io.is_dir! (root + "/a-sym"), io.is_link! (root + "/a-sym")]
+    console.print! (try! { io.read_link! (root + "/top.txt") } catch e { error.kind e })
+    console.print! (try! { io.symlink! "top.txt" (root + "/top-sym") } catch e { error.kind e })
+
+    console.print! (io.walk! root)
+    console.print! (io.remove_all! root)
+    console.print! (io.remove_all! root)
+};

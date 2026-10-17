@@ -1,0 +1,47 @@
+// This image is compiled once, then run unchanged on every supported OS.
+import std.console;
+import std.io;
+import std.list;
+import std.net;
+import std.os;
+import std.str;
+
+let forever n = forever (n + 1);
+let main! = {
+    let args = os.args! ();
+    match args {
+        ["child", ..rest] => console.print! rest,
+        ["timeout"] => console.print! (forever 0),
+        [vm, image, file] => {
+            console.print! (os.platform ())
+            let bytes = str.of_bytes [0, 10, 13, 26, 128, 255];
+            let out = io.open! file :write;
+            io.write! out bytes
+            io.close! out
+            let input = io.open! file :read;
+            console.print! (io.size! input == 6)
+            console.print! (io.read! input 100 == bytes)
+            io.close! input
+            io.remove! file
+            let child = os.exec! vm [image, "child", "", "two words", "quote\"here", "trail\\"];
+            console.print! (child.[:code] == 0)
+            console.print! child.[:out]
+            let timeout = os.exec_for! vm [image, "timeout"] 100;
+            console.print! timeout.[:timed_out]
+            let listener = net.listen! 0;
+            let worker = spawn! $( {
+                let peer = net.accept! listener;
+                let message = io.read! peer 100;
+                io.write! peer message
+                io.close! peer
+            } );
+            let peer = net.connect! "127.0.0.1" (net.port! listener);
+            io.write! peer "hello"
+            console.print! (io.read! peer 100 == "hello")
+            io.close! peer
+            join! worker
+            io.close! listener
+        },
+        _ => os.exit! 2,
+    }
+};

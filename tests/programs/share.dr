@@ -1,0 +1,42 @@
+// `vm.share!` moves a value into the runtime's shared area, from where it
+// crosses between processes by pointer. What it may never change is the
+// value: everything here checks that a shared value, and anything built on
+// top of one, reads exactly as the original would -- in this process, in a
+// child, after the child has changed it, and after the collector has run.
+import std.console;
+import std.list;
+import std.vm;
+
+let table n = list.fold (fn m i -> m.[i => [i, to_string i, i * 2]]) %{} (list.range 0 n);
+
+// A lazy list and a lazy map value: `share!` must force both first.
+let lazy_list = list.map (fn i -> i * i) (list.range 0 10);
+
+let sum_of m n = list.fold (fn acc i -> acc + (m.[i]).[2]) 0 (list.range 0 n);
+
+let main! = {
+    let t = vm.share! (table 2000);
+    console.print! ("the same value:  " + to_string (sum_of t 2000 == sum_of (table 2000) 2000))
+    console.print! ("forced first:    " + to_string (vm.share! lazy_list))
+
+    // A child reads it, builds on it, and hands both back.
+    let child = spawn! $( [sum_of t 2000, (t.[7 => :changed]).[7], t.[7]] );
+    console.print! ("in a child:      " + to_string (join! child))
+    console.print! ("still the same:  " + to_string (t.[7]))
+
+    // Four children, each reading all of it at once.
+    let kids = strict! (list.map (fn k -> spawn! $( sum_of t (500 * (k + 1)) )) (list.range 0 4));
+    console.print! ("four at once:    " + to_string (strict! (list.map (fn p -> join! p) kids)))
+
+    // Garbage around it, so the collector runs with shared values as roots.
+    let churn = list.fold_strict (fn acc i -> acc + len (to_string [i, t.[i % 2000]])) 0 (list.range 0 20000);
+    console.print! ("after churn:     " + to_string [churn > 0, (t.[1999]).[1]])
+
+    // Sharing what is shared costs nothing and changes nothing.
+    console.print! ("shared again:    " + to_string ((vm.share! t).[3]))
+
+    // A value holding a suspension it cannot force is refused.
+    let f = { let big = table 3; fn x -> big.[x] };
+    let refused = try! { vm.share! f; :shared } catch e { _error_kind e };
+    console.print! ("a closure:       " + to_string refused)
+};

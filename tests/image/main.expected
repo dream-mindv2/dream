@@ -1,0 +1,15 @@
+9
+[7, 2]
+  (shapes says: hello from the caller)
+shapes 1
+5
+<error :refused no>
+:image_error
+:image_error
+:image_error
+12
+shapes 1
+1
+[1, 4, 9, 16, 25, 36, 49, 64]
+[:ok, :ok]
+:absent

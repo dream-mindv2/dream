@@ -1,0 +1,53 @@
+// A key a map compares by identity, found again after the collector has moved it.
+//
+// A list, an array or a closure used as a map key is compared by identity, and
+// it used to be *hashed* by its address. The collector moves objects -- every
+// young one is copied out of the nursery by the next minor collection, and a
+// major may move old ones out of a sparse block -- so a key that was found
+// before a collection was missing after it. The same went for a map sent to
+// another process with its keys: the copy filed its leaves under the old
+// addresses' hashes and looked the copied keys up under their new ones.
+//
+// The hash lives in the object's header now (`AUX_IDENTITY`), and every copy
+// carries it. `identity_keys.env` shrinks the nursery so that the churn below
+// collects many times, minor and major, between the put and the lookups.
+import std.console;
+import std.list;
+
+let rec churn !n !acc =
+    if n == 0 { acc } else { churn (n - 1) (acc + list.length [n, n, n, n]) };
+
+let rec keep n = if n == 0 { [] } else { list.cons [n, n * 2] (keep (n - 1)) };
+
+let lookup m k = m.[k else "missing"];
+
+let receiver! () = {
+    let [m, k] = recv! ();
+    lookup m k
+};
+
+let main! = {
+    let lk = strict! [1, 2, 3];
+    let ak = strict! #[4, 5, 6];
+    let fk = strict! (fn x -> x + 1);
+    let m = strict! %{ lk => "list", ak => "array", fk => "closure" };
+
+    // Many keys, so that some share a leaf chain and the lookups below have to
+    // tell them apart by identity rather than by hash.
+    let many = strict! (keep 2000);
+    let big = strict! (list.fold_strict (fn acc k -> acc.[k => list.head k]) %{} many);
+
+    console.print! ("before: " + lookup m lk + " " + lookup m ak + " " + lookup m fk);
+    console.print! ("churned " + to_string (strict! (churn 300000 0)));
+    console.print! ("after: " + lookup m lk + " " + lookup m ak + " " + lookup m fk);
+    console.print! ("a fresh list is another key: " + lookup m [1, 2, 3]);
+
+    let found = strict! (list.fold_strict (fn n k -> n + big.[k else 0]) 0 many);
+    console.print! ("sum of 2000 identity lookups: " + to_string found);
+
+    // The map and its key cross together, as one message, so that the key on
+    // the other side is the copy of the one the map was filed under.
+    let r = spawn! $( receiver! () );
+    send! r [m, lk];
+    console.print! ("in another process: " + join! r)
+};

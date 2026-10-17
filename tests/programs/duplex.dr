@@ -1,0 +1,76 @@
+// Two processes parked on one socket at once, and several on one listener.
+//
+// The poller used to keep one waiter per descriptor, so the second process to
+// park on a socket replaced the first, which was never woken. It took two at
+// once to see it: a reader and a writer on the same connection (full duplex,
+// which a protocol that streams both ways is), or several processes accepting
+// on one listener. Each half here hangs without the fix.
+import std.console;
+import std.io;
+import std.net;
+import std.list;
+import std.str;
+
+let rec write_all! sock text = {
+    let wrote = io.write! sock text;
+    if wrote < len text { write_all! sock (str.slice wrote (len text - wrote) text) } else { :done }
+};
+
+let rec write_n! sock chunk n = if n == 0 { :done } else {
+    write_all! sock chunk
+    write_n! sock chunk (n - 1)
+};
+
+let rec drain! sock !total = {
+    let got = io.read! sock 65536;
+    if len got == 0 { total } else { drain! sock (total + len got) }
+};
+
+// Both ends write a lot before reading anything back, so both end up parked
+// writing while their readers park reading the same descriptors.
+let echo_side! sock chunk n = {
+    let writer = spawn! $( { write_n! sock chunk n; net.shutdown! sock } );
+    let got = drain! sock 0;
+    join! writer
+    got
+};
+
+let accept_one! listener = {
+    let conn = net.accept! listener;
+    io.write! conn "x"
+    io.close! conn
+    :accepted
+};
+
+let rec join_all! ps !n = match ps { [] => n, [p, ..rest] => { join! p; join_all! rest (n + 1) } };
+
+let main! = {
+    let listener = net.listen! 0;
+    let port = net.port! listener;
+    let chunk = str.concat_all [str.of_bytes [120], str.of_bytes [121]];
+    let big = str.concat_all (list_of chunk 32768);
+    let server = spawn! $( { let conn = net.accept! listener; echo_side! conn big 64 } );
+    let sock = net.connect! "127.0.0.1" port;
+    let mine = echo_side! sock big 64;
+    console.print! [mine, join! server]
+    io.close! sock
+
+    // Eight acceptors parked on one listener; eight connections arrive.
+    let acceptors = spawn_n! listener 8 [];
+    let conns = connect_n! port 8 [];
+    console.print! (join_all! acceptors 0)
+    close_all! conns
+    io.close! listener
+};
+
+let rec list_of x n = if n == 0 { [] } else { list.cons x (list_of x (n - 1)) };
+let rec spawn_n! listener n acc = if n == 0 { acc } else {
+    let p = spawn! $( accept_one! listener );
+    spawn_n! listener (n - 1) (list.cons p acc)
+};
+let rec connect_n! port n acc = if n == 0 { acc } else {
+    let c = net.connect! "127.0.0.1" port;
+    io.read! c 1
+    connect_n! port (n - 1) (list.cons c acc)
+};
+let rec close_all! cs = match cs { [] => (), [c, ..rest] => { io.close! c; close_all! rest } };

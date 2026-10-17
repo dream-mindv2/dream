@@ -1,0 +1,20 @@
+// Errors carry a kind and a payload, and `try!` restores the stack.
+import std.console;
+let main! = {
+    let a = try! { 1 / 0 } catch e { :divide };
+    console.print! ("divide:   " + to_string a)
+
+    let b = try! { 1 + "not a number" } catch e { :type_error };
+    console.print! ("type:     " + to_string b)
+
+    let c = try! { raise! :custom } catch e { e };
+    console.print! ("custom:   " + to_string c)
+
+    // A handler's value is the expression's value.
+    let d = try! { 10 } catch e { 0 };
+    console.print! ("no raise: " + to_string d)
+
+    // Nested handlers unwind to the innermost one.
+    let e2 = try! { try! { 1 / 0 } catch inner { :inner } } catch outer { :outer };
+    console.print! ("nested:   " + to_string e2)
+}

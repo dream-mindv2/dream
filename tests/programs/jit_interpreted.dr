@@ -1,0 +1,64 @@
+// Interpreter/JIT parity for the nodes the tier hands to the interpreter: an
+// op it does not write itself, in an evaluated position, is suspended against
+// the iteration's frame and forced where it stands (see "What the interpreter
+// evaluates" in dream/src/jit.cpp). `jit_interpreted.jit` names the functions
+// that must compile with such a node in them; the harness runs every one of
+// them compiled from its first call, and under the interpreter, and compares.
+import std.console;
+import std.list;
+import std.map;
+import std.str;
+
+mapping Env { names : %{:string => :integer} = %{}, depth : :integer = 0 }
+
+// The accessor's `%{}` default, which used to refuse every accessor of a
+// `mapping` -- built in place now.
+let rec count_depths !acc es = match es {
+    [] => acc,
+    [e, ..rest] => count_depths (acc + map.size (Env.names e) + Env.depth e) rest,
+};
+
+// A map literal with entries forces its keys in order: the interpreter's.
+let rec tally !acc i n =
+    if i >= n { acc } else { tally (acc + map.size %{i => i, (i % 2) => 0}) (i + 1) n };
+
+// A key that raises, in the literal, on the fifth iteration only.
+let rec risky !acc i n =
+    if i >= n { acc } else { risky (acc + map.size %{(10 / (5 - i)) => i}) (i + 1) n };
+
+// A lambda made in the loop and handed on: `closure` in an evaluated position.
+let rec adders !acc i n =
+    if i >= n { acc } else { adders (acc + apply_to (fn x -> x + i) i) (i + 1) n };
+let apply_to f x = f x;
+
+// A builtin and a module member as values, chosen in an evaluated position.
+let measure pick xs = (if pick { len } else { list.length }) xs;
+let rec measures !acc i xs = if i <= 0 { acc } else { measures (acc + measure (i % 2 == 0) xs) (i - 1) xs };
+
+// A literal too large for a fixnum, in the body.
+let rec bigs !acc i = if i <= 0 { acc } else { bigs (acc + 100000000000000000000 % (i + 7)) (i - 1) };
+
+// A lambda reading what it captured, called hot through `list.map` and
+// `list.fold`: the capture is a load from its closure.
+let scaled k xs = list.map (fn x -> x * k + k) xs;
+let weigh k xs = list.fold (fn acc x -> acc + x * k) 0 xs;
+
+// A capture that is a suspension, and raises when forced: only an element
+// that is read may see it.
+let poisoned d xs = { let bad = 1 / d; list.map (fn x -> if x > 2 { bad } else { x }) xs };
+
+let main! = {
+    let es = list.map (fn i -> Env.make %{"a" => i} i) (list.range 0 200);
+    console.print! (count_depths 0 es)
+    console.print! (count_depths 0 [%{}, Env.make %{} 3])
+    console.print! (tally 0 0 1000)
+    console.print! (try! { risky 0 0 4 } catch e { e })
+    console.print! (try! { risky 0 0 10 } catch e { e })
+    console.print! (adders 0 0 1000)
+    console.print! (measures 0 1000 [1, 2, 3])
+    console.print! (bigs 0 1000)
+    console.print! (list.sum (scaled 3 (list.range 0 1000)))
+    console.print! (weigh 7 (list.range 0 1000))
+    console.print! (list.take 2 (poisoned 0 [1, 2, 3]))
+    console.print! (try! { poisoned 0 [1, 2, 3] |> list.sum } catch e { e })
+}

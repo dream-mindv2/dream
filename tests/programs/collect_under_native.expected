@@ -1,0 +1,7 @@
+concat_all length: 31994
+of_bytes length:   4000
+of_chars length:   4000
+append length:     4000
+shared halves agree: true
+concat checksum:   3119415
+of_bytes checksum: 498355

@@ -1,0 +1,39 @@
+// Tail recursion must run in constant space, and non-tail recursion must be
+// able to go deep without a native stack to overflow.
+//
+// Every program here runs twice, with the JIT and without, and the two must
+// agree -- which is the whole point of this file now that the JIT compiles self
+// recursion of both shapes. A tail call it makes a loop back-edge; anything
+// else it makes a *machine* call, and a machine stack is a fixed resource where
+// a heap continuation is not. So the cases below are chosen to cross that line
+// from both sides: shallow enough to stay compiled, deep enough to run the
+// compiled recursion out of stack and hand the call back to the interpreter,
+// and one of each in the same function.
+import std.console;
+let rec count_down n = if n <= 0 { 0 } else { count_down (n - 1) };
+let rec sum_to n = if n <= 0 { 0 } else { n + sum_to (n - 1) };
+let rec fac n = if n <= 1 { 1 } else { n * fac (n - 1) };
+
+/// Both shapes in one body: the even step is a tail call and the odd step is
+/// not, so the compiled form is a loop with a machine call inside it.
+let rec odds_below n =
+    if n <= 0 { 0 }
+    else if n % 2 == 0 { odds_below (n - 1) }
+    else { 1 + odds_below (n - 1) };
+
+/// An error raised at the bottom of a compiled recursion has to travel back up
+/// through every compiled frame above it.
+let rec dive n = if n <= 0 { 1 / 0 } else { 1 + dive (n - 1) };
+
+let main! = {
+    console.print! ("tail:     " + to_string (count_down 2000000))
+    console.print! ("non-tail: " + to_string (sum_to 100000))
+    console.print! ("fac 20:   " + to_string (fac 20))
+    // Shallow first, so the compiled loop-with-a-call-in-it is what runs it;
+    // then deep, which runs that same body out of machine stack and finishes
+    // in the interpreter. The order is the test: once a function has been
+    // handed back it is not offered to the JIT again.
+    console.print! ("mixed:    " + to_string (odds_below 999))
+    console.print! ("deopted:  " + to_string (odds_below 40001))
+    console.print! ("raised:   " + to_string (try! { dive 100 } catch e { e }))
+}

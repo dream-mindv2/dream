@@ -1,0 +1,70 @@
+// Interpreter/JIT parity for building ahead: a compiled `cons h (f ..)` makes
+// a run of cells a call rather than one, and an iteration ahead of the reader
+// may do only what cannot be seen. Every case here is a way it could be seen
+// -- an error, a loop that never ends, a value nobody asked for -- past the
+// point the reader stops. `jit_ahead.jit` names the producers that must
+// compile; the e2e harness runs each from its first call under both tiers.
+import std.console;
+import std.list;
+
+// The plain producer, and one that is never finished.
+let rec rep n x = if n <= 0 { [] } else { list.cons x (rep (n - 1) x) };
+let rec from n = list.cons n (from (n + 1));
+let rec take n xs = if n <= 0 { [] } else { list.cons (xs.[0]) (take (n - 1) (list.tail xs)) };
+let rec sum !acc xs = if list.is_empty xs { acc } else { sum (acc + xs.[0]) (list.tail xs) };
+
+// An error in the body, twenty cells in: nobody who reads ten may see it.
+let rec risky i = if 100 / (20 - i) > 0 { list.cons i (risky (i + 1)) } else { [] };
+
+// A condition that stops being a bool at the fifth cell.
+let rec shaky i = if (if i < 5 { true } else { i }) { list.cons i (shaky (i + 1)) } else { [] };
+
+// Past fifty it spins for ever, by a tail call: only a reader of the fifty-
+// first cell may hang.
+let rec spin i = if i > 50 { spin i } else { list.cons i (spin (i + 1)) };
+
+// Skipping is a tail call and keeping is a cell, in one loop.
+let rec odds xs =
+    if list.is_empty xs { [] }
+    else if xs.[0] % 2 == 0 { odds (list.tail xs) }
+    else { list.cons (xs.[0]) (odds (list.tail xs)) };
+
+// A function it was handed, in a lazy position: suspended, never called ahead.
+let rec map_with f xs = if list.is_empty xs { [] } else { list.cons (f (xs.[0])) (map_with f (list.tail xs)) };
+
+// A `let` in the body, and a `match` over two lists.
+let rec squares i n = if i > n { [] } else { let s = i * i; list.cons s (squares (i + 1) n) };
+let rec zip xs ys = match [xs, ys] {
+    [[x, ..xr], [y, ..yr]] => list.cons [x, y] (zip xr yr),
+    _ => [],
+};
+
+// A step whose count leaves the fixnum range on the way.
+let big = 4611686018427387900;
+
+let main! = {
+    console.print! (len (rep 100000 "ab"))
+    console.print! (sum 0 (rep 100000 3))
+    // An element nobody looks at is never evaluated, ahead or not.
+    console.print! (len (rep 10 (1 / 0)))
+    console.print! (take 5 (from 7))
+    console.print! (sum 0 (take 1000 (from 1)))
+    console.print! (take 3 (from big))
+
+    console.print! (take 10 (risky 0))
+    console.print! (try! { len (risky 0) } catch e { e })
+    console.print! (take 5 (shaky 0))
+    console.print! (try! { len (shaky 0) } catch e { e })
+    console.print! (take 10 (spin 0))
+    console.print! (sum 0 (take 51 (spin 0)))
+
+    console.print! (take 5 (odds (from 1)))
+    console.print! (len (odds (rep 1000 2)))
+    console.print! (sum 0 (odds (take 1000 (from 1))))
+    console.print! (take 4 (map_with (fn x -> x * 10) (from 1)))
+    console.print! (take 4 (map_with (fn x -> 10 / (5 - x)) (from 1)))
+    console.print! (try! { sum 0 (map_with (fn x -> 10 / (5 - x)) (take 5 (from 1))) } catch e { e })
+    console.print! (sum 0 (squares 1 1000))
+    console.print! (take 3 (zip (from 1) (rep 1000 "z")))
+    console.print! (len (zip (from 1) (rep 1000 "z")))
+};

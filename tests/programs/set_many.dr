@@ -1,0 +1,56 @@
+// A chain of changes at constant keys is one `set_many` (`lower.fuse_set`).
+// Each case here is something the chain of `set`s it replaced answered, and
+// the fused node must answer the same under both tiers: the later key
+// winning, the values left unforced, the same error at the same key, and the
+// original container untouched.
+import std.console;
+import std.error;
+import std.list;
+
+struct Person { name, age, weight }
+mapping Config { host, port, tls }
+
+let rename p = p |> Person.set_name "test" |> Person.set_age 23 |> Person.set_weight 2;
+
+let rec age_up !p n = if n == 0 { p } else {
+    age_up (p |> Person.set_age (Person.age p + 1) |> Person.set_weight n) (n - 1) };
+
+let kind_of! thunk = try! { strict! (thunk ()) } catch e { error.kind e };
+
+let main! = {
+    let p = Person.make "x" 1 1;
+    console.print! (rename p)
+    // The one given is a value, and is still what it was.
+    console.print! p
+    // A later key wins, as the second `set` overwrote the first.
+    console.print! (p |> Person.set_age 5 |> Person.set_age 6)
+    // A value is stored unforced: a field set to a failure is a failure only
+    // when it is read.
+    let lazy = p |> Person.set_name (1 / len []) |> Person.set_age 7;
+    console.print! (Person.age lazy)
+    console.print! (try! { Person.name lazy } catch e { :caught })
+    // Compiled, in a loop the JIT takes.
+    console.print! (age_up p 20000)
+
+    // Arrays, by position; a bad key raises what that `set` would have.
+    console.print! (#[1, 2, 3].[0 => 9].[2 => 8])
+    console.print! (kind_of! (fn _ -> #[1, 2].[0 => 9].[5 => 1]))
+    // Lists, which are walked a pair at a time.
+    console.print! ([1, 2, 3].[0 => 9].[2 => 8])
+    console.print! (kind_of! (fn _ -> [1, 2].[0 => 9].[5 => 1]))
+    // Maps, by key, and a `mapping`'s setters.
+    console.print! ((%{ :a => 1 }).[:b => 2].[:a => 3].[:a else 0])
+    let c = Config.make "localhost" 80 false |> Config.set_port 443 |> Config.set_tls true;
+    console.print! [Config.host c, Config.port c, Config.tls c]
+    // A map deep enough to have branches below the root, changed as one batch
+    // (`map_insert_many`): keys that share a path, one already there, one
+    // new, one changed twice -- and the map given left as it was.
+    let big = list.fold_strict (fn m i -> m.[i => i * 10]) (%{}) (list.range 0 2000);
+    let changed = big.[3 => :a].[1700 => :b].[3 => :c].[2000 => :new].[35 => :d];
+    console.print! [changed.[3], changed.[1700], changed.[2000], changed.[35], changed.[36], len changed]
+    console.print! [big.[3], big.[1700], big.[2000 else :absent], len big]
+    console.print! (list.all (fn i -> changed.[i] == big.[i])
+                             (list.filter (fn i -> i != 3 && i != 1700 && i != 35) (list.range 0 2000)))
+    // Something no `set` changes is refused the same way.
+    console.print! (kind_of! (fn _ -> 5.[0 => 1].[1 => 2]))
+};

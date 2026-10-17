@@ -1,0 +1,25 @@
+import std.list;
+import std.proc;
+import std.console;
+
+// Heat the ordinary fold, with a named list so source fusion cannot hide it.
+let rec warm !acc n xs = if n == 0 { acc }
+    else { warm (acc + list.fold (fn a x -> a + x) 0 xs) (n - 1) xs };
+let worker! () = recv! ();
+let stop! acc p = {
+    send! p :done
+    proc.recv_where! (fn m -> proc.is_down_of p m)
+    acc + 1
+};
+let main! = {
+    console.print! (warm 0 10000 [1, 2])
+    let a = spawn! $( worker! () );
+    let b = spawn! $( worker! () );
+    proc.monitor! a
+    proc.monitor! b
+    // Each callback consumes its unique down message. A JIT retry that repeats
+    // the first callback waits forever for a message it already consumed.
+    console.print! (list.fold (fn acc p -> stop! acc p) 0 [a, b])
+    console.print! (join! a)
+    console.print! (join! b)
+};

@@ -1,0 +1,6 @@
+Op.clamp(1, 2)
+10
+[:op_push, :list_push, :array_push, :op_add, :atom_add, :other]
+[true, false, true, false]
+[:Op, true, false, true]
+1000000

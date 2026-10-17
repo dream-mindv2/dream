@@ -1,0 +1,3 @@
+quick: quick
+timed out: false, in time: true
+slow: exit 0

@@ -1,0 +1,243 @@
+// std.ffi and std.foreign, against `sample.c`.
+//
+// Built by run.sh with `--payload sample=libsample.so`, so the library under
+// test is the one the image carries -- which is also the test of that. Every
+// destructor in the C library writes to a log, and most checks below read it:
+// what matters about a resource is not only that it was let go but when, and
+// in what order.
+//
+// Handles are printed as their tag rather than whole, because their ids come
+// from one counter for the runtime and would make this file's expectations a
+// record of how many things happened to be made before.
+
+import std.console;
+import std.ffi;
+import std.foreign;
+import std.list;
+import std.map;
+
+foreign sample from embedded "sample" {
+    resource Counter = counter_free
+    resource Cursor = cursor_close
+    struct Point { x : :i32, y : :double, tag : :u8 }
+
+    new! : :long -> Counter = counter_new
+    add! : Counter -> :long -> :long = counter_add
+    open! : Counter -> Cursor = cursor_open
+    read! : Cursor -> :long = cursor_read
+    make! : :long -> out Counter -> :int = counter_make
+    null! : :void -> Counter | () = counter_null
+    log! : :void -> :cstr = sample_log
+    clear! : :void -> :void = sample_clear_log
+
+    divmod : :int -> :int -> out :int -> out :int -> :int
+    scale : :f32 -> :double -> :double
+    negate8 : :i8 -> :i8
+    greet : :cstr -> taken free
+    count_byte : :bytes -> :size -> :int -> :size
+    fold_range : :long -> (:long -> :long -> :long) -> :long -> :long
+    apply_twice : (:double -> :double) -> :double -> :double
+    sort! : :buffer -> :size -> (:int -> :int -> :int) -> :void = sort_ints
+    fill! : Point -> :i32 -> :double -> :void = point_fill
+    point_sum : Point -> :double
+    point_size : :void -> :size
+}
+
+/// A function of the program itself: whatever the VM is linked against.
+foreign libc {
+    strlen : :cstr -> :size
+}
+
+/// The form a declaration compiles to, for a signature a program builds.
+let low_byte = foreign.pure_function (foreign.embedded "sample") "low_byte" [:u32] :u8;
+
+let tag_of h = if h == () { () } else { h.[1] };
+
+/// A value the checker cannot see into, for reaching the checks the VM makes
+/// at run time: a cursor where a counter is wanted is a compile error
+/// otherwise.
+let unseen : :any -> :any;
+let unseen x = x;
+
+let section! title = console.print! ("-- " + title);
+
+// --- in this process -------------------------------------------------------------
+
+let scalars! u = {
+    section! "scalars"
+    console.print! (libc.strlen "dream")
+    console.print! (sample.divmod 17 5)
+    console.print! (sample.divmod 1 0)
+    console.print! (sample.scale 1.5 2.0)
+    console.print! (low_byte 511)
+    console.print! (sample.negate8 5)
+    console.print! (sample.greet "world")
+    console.print! (sample.count_byte "banana" 6 97)
+};
+
+let ownership! u = {
+    section! "ownership"
+    sample.clear! ()
+    let c = sample.new! 10;
+    console.print! (tag_of c)
+    console.print! (sample.add! c 5)
+    let k = sample.open! c;
+    console.print! (sample.read! k)
+    // The cursor was made from the counter, so it goes first.
+    ffi.release! c
+    console.print! (sample.log! ())
+    console.print! [ffi.alive! c, ffi.alive! k]
+    console.print! (try! { sample.read! k } catch e { e })
+    console.print! (try! { ffi.release! c } catch e { e })
+    // A cursor where a counter is wanted.
+    let c2 = sample.new! 1;
+    let k2 = sample.open! c2;
+    console.print! (try! { sample.add! (unseen k2) 1 } catch e { e })
+    console.print! (try! { sample.add! (unseen [:foreign, "sample.Counter", 424242]) 1 } catch e { e })
+    console.print! (tag_of (sample.null! ()))
+    let [status, made] = sample.make! 3;
+    console.print! [status, tag_of made]
+    console.print! (sample.make! (0 - 1))
+    console.print! (list.map tag_of (ffi.owned! ()))
+};
+
+let bump! h = sample.add! h 99;
+
+let raises! h = {
+    sample.add! h 1
+    raise! :from_inside
+};
+
+let scoped! u = {
+    section! "using!"
+    sample.clear! ()
+    console.print! (foreign.using! (sample.new! 1) bump!)
+    console.print! (try! { foreign.using! (sample.new! 2) raises! } catch e { e })
+    console.print! (sample.log! ())
+};
+
+let callbacks! u = {
+    section! "callbacks"
+    console.print! (sample.fold_range 10 (fn acc i -> acc + i * i) 0)
+    console.print! (sample.apply_twice (fn x -> x * 3.0) 2.0)
+    let xs = foreign.array_of! :int [5, 1, 9, 3, 7];
+    sample.sort! xs 5 (fn a b -> b - a)
+    console.print! (foreign.read_array! xs 0 :int 5)
+    // An error in a callback is raised once C has returned.
+    console.print! (try! { sample.fold_range 3 (fn acc i -> if i == 2 { acc / 0 } else { acc + i }) 0 } catch e { e })
+    // An impure one is refused before C is called at all.
+    console.print! (try! { sample.sort! xs 5 compare! } catch e { e })
+};
+
+let compare! a b = { console.print! "never"; a - b };
+
+/// A map as its pairs in key order, all the way down. A map prints in the order
+/// its keys hash, and an atom hashes by its index in the image, which moves
+/// whenever the compiler numbers the image differently; what is being tested
+/// is the layout, not the order a map happens to print in.
+let ordered v = match type_of v {
+    :map => list.map (fn [k, x] -> [k, ordered x]) (list.sort_on list.head (map.pairs v)),
+    :list => list.map ordered v,
+    _ => v,
+};
+
+let memory! u = {
+    section! "memory"
+    console.print! [sample.point_size (), sample.Point.size]
+    console.print! (ordered sample.Point.layout)
+    let b = sample.Point.new! ();
+    sample.fill! b 3 1.5
+    console.print! (ordered (sample.Point.read! b))
+    sample.Point.write! b %{ :x => 10 }
+    console.print! (sample.point_sum b)
+    console.print! (sample.Point.offset :y)
+    let s = foreign.buffer_of! "abc";
+    console.print! [ffi.size! s, foreign.read_string! s 0, foreign.read! s 1 2]
+    console.print! (try! { foreign.peek! s 2 :i32 } catch e { e })
+    console.print! (try! { foreign.write! s 3 "xy" } catch e { e })
+    console.print! (try! { ffi.size! (sample.new! 0) } catch e { e })
+};
+
+// --- across processes ------------------------------------------------------------------
+
+let leaky! u = {
+    let c = sample.new! 1;
+    let k = sample.open! c;
+    let d = sample.new! 2;
+    strict! [c, k, d]
+    :done
+};
+
+let crashy! u = {
+    strict! (sample.new! 3)
+    raise! :boom
+};
+
+let handed_to! parent = {
+    let [h] = recv! ();
+    send! parent (try! { sample.add! h 1 } catch e { e })
+};
+
+let processes! u = {
+    section! "processes"
+    sample.clear! ()
+    // Nothing released, and still every destructor runs as the process ends --
+    // newest first, so the cursor before the counter it reads.
+    console.print! (join! (spawn! $( leaky! () )))
+    console.print! (sample.log! ())
+    sample.clear! ()
+    console.print! (try! { join! (spawn! $( crashy! () )) } catch e { e })
+    console.print! (sample.log! ())
+    // A handle names nothing in a process that does not own it.
+    let mine = sample.new! 5;
+    let me = self! ();
+    let other = spawn! $( handed_to! me );
+    send! other [mine]
+    console.print! (recv! ())
+    join! other
+};
+
+// --- a library as a process ------------------------------------------------------------
+
+let served! u = {
+    section! "a library server"
+    sample.clear! ()
+    let srv = foreign.start! ();
+    let c = foreign.run! srv (fn () -> sample.new! 5);
+    console.print! (tag_of c)
+    console.print! (foreign.run! srv (fn () -> sample.add! c 2))
+    // Any amount of work is one message, and one answer.
+    let [k, n] = foreign.run! srv (fn () -> {
+        let k = sample.open! c;
+        [k, sample.read! k]
+    });
+    console.print! n
+    // The server owns them, so they mean nothing here...
+    console.print! (try! { sample.add! c 1 } catch e { e })
+    // ...and work that raises is the caller's error, not the server's end.
+    console.print! (try! { foreign.run! srv (fn () -> sample.add! (unseen k) 1) } catch e { e })
+    console.print! (foreign.run! srv (fn () -> sample.add! c 3))
+    console.print! (foreign.run! srv (fn () -> {
+        let b = foreign.buffer! 8;
+        foreign.poke! b 0 :i64 77
+        foreign.peek! b 0 :i64
+    }))
+    console.print! (list.map tag_of (foreign.run! srv (fn () -> foreign.owned! ())))
+    console.print! (foreign.run! srv (fn () -> { foreign.release! k; foreign.alive! k }))
+    // Stopping it lets go of the rest.
+    foreign.stop! srv
+    console.print! (sample.log! ())
+    // `here` is the same interface, in this process.
+    let mine = foreign.run! foreign.here (fn () -> sample.new! 1);
+    console.print! (foreign.run! foreign.here (fn () -> sample.add! mine 1))
+};
+
+let main! = {
+    scalars! ()
+    ownership! ()
+    scoped! ()
+    callbacks! ()
+    memory! ()
+    processes! ()
+    served! ()
+};

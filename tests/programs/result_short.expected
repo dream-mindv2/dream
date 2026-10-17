@@ -1,0 +1,7 @@
+[Result.ok(3), Result.error(:bad)]
+[Result.ok(8), Result.error(:negative)]
+Result.ok(6)
+[Result.ok(1), Result.ok(2), Result.ok(3)]
+[Result.error(:a), Result.error(:b)]
+[101, -99]
+[11, -9]

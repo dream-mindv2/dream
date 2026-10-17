@@ -1,0 +1,67 @@
+// A program using `shapes.dream` three ways -- by path, installed, and carried
+// in its own payload -- through `image` blocks, which `syntax.image_decl`
+// makes modules of `std.image` bindings. `run.sh` builds both and runs this
+// under the interpreter and the JIT.
+
+import std.console;
+import std.error;
+import std.image;
+import std.list;
+
+image shapes from "shapes.dream" {
+    area : [:atom, :float] -> :float
+    total : [[:atom, :float]] -> %{ :sum => :float, :count => :integer }
+    log! : :string -> :unit
+    refuse! : :string -> :unit
+    version : :string
+    cm : :float -> :float = shapes.units.cm
+}
+
+image installed_shapes from installed "shapes" {
+    area : [:atom, :float] -> :float
+}
+
+image carried from embedded "shapes" {
+    version : :string
+}
+
+image fallback from (image.any_of [image.installed "no-such-image", image.embedded "shapes"]) {
+    area : [:atom, :float] -> :float
+}
+
+let main! = {
+    console.print! (to_string (shapes.area [:square, 3.0]))
+    // By key: a map prints in its atoms' order, and that is the order they
+    // first appear in this whole program, which any change to `std` moves.
+    let total = shapes.total [[:square, 2.0], [:circle, 1.0]];
+    console.print! (to_string [total.[:sum], total.[:count]])
+    shapes.log! "hello from the caller"
+    console.print! shapes.version
+    console.print! (to_string (shapes.cm 2.0))
+
+    // What the image raised is raised here, as this program's error.
+    console.print! (to_string (try! { shapes.refuse! "no" } catch e { e }))
+
+    // Only data crosses.
+    let apply! = image.function (image.file "shapes.dream") "apply" 1;
+    console.print! (to_string (try! { apply! (fn x -> x) } catch e { error.kind e }))
+
+    // A binding is checked against the image when it is made.
+    console.print! (to_string (try! { image.function (image.file "shapes.dream") "missing" 1 } catch e { error.kind e }))
+    console.print! (to_string (try! { image.function (image.file "shapes.dream") "area" 0 } catch e { error.kind e }))
+
+    console.print! (to_string (installed_shapes.area [:circle, 2.0]))
+    console.print! carried.version
+    console.print! (to_string (fallback.area [:square, 1.0]))
+
+    // One image, called from many processes at once: each call is its own
+    // scheduler, and the session lets one run at a time.
+    let workers = list.map (fn side -> spawn! $( shapes.area [:square, side] ))
+                           [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    console.print! (to_string (list.map (fn w -> join! w) workers))
+
+    console.print! (to_string (list.map (fn r -> match r { Result.ok(_) => :ok, other => other })
+                                        [image.locate! (image.file "shapes.dream"),
+                                         image.locate! (image.installed "shapes")]))
+    console.print! (to_string (match image.locate! (image.installed "absent") { Result.error(_) => :absent, other => other }))
+};

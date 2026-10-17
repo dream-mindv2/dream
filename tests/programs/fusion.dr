@@ -1,0 +1,151 @@
+// Deforestation: a pipeline of `std.list` combinators is one loop, and the
+// list between them is never built.
+//
+// What is checked here is that removing the list changed nothing else. Every
+// answer below is the answer the combinators give, and the point of writing
+// them out is the cases where the pass must *decline*: a list that is named, a
+// fold whose function reaches the frame around it, one that performs an
+// effect, and a `fold_lazy` whose accumulator has to stay lazy.
+//
+// It runs under both tiers, which is the other half of the question. A fused
+// loop is a strict numeric tail loop, so the JIT compiles most of what is here
+// -- and a JIT that changes what a program prints is a broken JIT.
+
+import std.console;
+
+import std.list;
+
+// A fold named once at the top of a file, which is how the benchmark this pass
+// was built for writes it. The call site says `total`, and the pass has to see
+// through the rename to know what it is.
+let total = list.fold_strict;
+
+// A module of its own, with members of the same names. Nothing here is
+// `std.list`, so nothing here fuses -- which is the difference between
+// recognising a resolved global and recognising a spelling.
+mod fake {
+    let range from until = [7];
+    let fold f acc xs = :not_the_real_fold;
+}
+
+// --- the sinks over the sources ---------------------------------------------
+
+let folded      = list.fold (fn a b -> a + b) 0 (list.range 1 11);
+let folded_hard = list.fold_strict (fn a b -> a + b) 0 (list.range 1 11);
+let summed      = list.sum (list.range 1 11);
+let multiplied  = list.product (list.range 1 5);
+let renamed     = total (fn a b -> a + b) 0 (list.range 1 11);
+let repeated    = list.fold_strict (fn a b -> a + b) 0 (list.replicate 4 3);
+let joined      = list.fold_strict (fn a b -> a + b) "" (list.replicate 3 "ab");
+
+// Nothing to fold over. A source that yields no element must hand the seed
+// back untouched, and must hand it back *unforced* -- the seed here would
+// raise if anyone looked at it.
+let empty_up   = list.fold (fn a b -> a + b) 0 (list.range 5 5);
+let empty_down = list.fold (fn a b -> a + b) 0 (list.replicate 0 1);
+// ..and hand it back *unforced*: this seed raises if anyone looks at it, and
+// `len` counts cells without looking at what is in them.
+let empty_kept = list.length [list.fold (fn a b -> b) (1 / 0) (list.range 3 3)];
+
+// Long enough that a chain of suspensions would be visible as memory rather
+// than as a wrong answer, and that the loop is worth compiling.
+let big = list.fold_strict (fn a b -> a + b) 0 (list.range 1 200_001);
+let big_float = list.fold_strict (fn a b -> a + _to_float b) 0.0 (list.range 1 100_001);
+
+// --- what must not fuse ------------------------------------------------------
+
+// A named list is a shared one. Fusing it would build it twice, so the pass
+// leaves it alone -- and the answer is the same either way, which is the point.
+let named = {
+    let xs = list.range 1 11;
+    list.fold_strict (fn a b -> a + b) 0 xs + list.length xs
+};
+
+// The fold's function reaches `k`, which lives in the frame around it. A fused
+// loop is a global and has no captures, so this one stays a fold.
+let scaled k = list.fold_strict (fn acc x -> acc + k * x) 0 (list.range 1 5);
+
+// Neither member is `std.list`'s.
+let impostor = fake.fold (fn a b -> a + b) 0 (fake.range 1 5);
+
+// `fold_lazy` is lazy in its accumulator, and fusion must preserve that: every
+// step but the last would raise, and none of them is ever forced.
+let stays_lazy = list.fold_lazy (fn acc x -> if x == 2 { 7 } else { acc / 0 }) 1 (list.range 1 3);
+
+// A fold that performs an effect is not fused, because a fused loop is a
+// global whose name is pure and the machine would stop sequencing it. The
+// order these print in is what says so.
+let counted! () = list.fold_strict (fn acc x -> { console.print! ("saw " + to_string x); acc + x })
+                                0 (list.range 1 4);
+
+// --- a stage that was given a name -------------------------------------------
+//
+// The rule is one syntactic *use*, not "no binding". A `let` read exactly once
+// is nobody else's list, so writing its body where it is read is the same
+// program -- and that is how pipelines are actually written.
+
+// The shape `mapfilter` in the benchmark has: every stage named, each read
+// once. It fuses into exactly the loop the direct spelling would.
+let named_stages n = {
+    let squares = list.map (fn x -> x * x) (list.range 1 (n + 1));
+    let odds = list.filter (fn x -> x % 2 == 1) squares;
+    list.fold_strict (fn acc x -> acc + x) 0 odds
+};
+
+// `n` means something else after the second `let`, so the stage stays where it
+// was written. Moved, `xs` would read the 99 and count to 100 rather than to 6,
+// and the answer would be 5049 instead of 114.
+let shadowed n = { let xs = list.range 1 (n + 1); let n = 99; list.sum xs + n };
+
+// Two reads is a shared list: built once and walked twice, as written.
+let shared n = { let xs = list.range 1 (n + 1); list.sum xs + list.length xs };
+
+// Two `let`s of one name. The read belongs to the second.
+let rebound n = { let xs = list.range 1 (n + 1); let xs = list.range 1 3; list.sum xs };
+
+// Read inside a lambda, which is a frame of its own. A stage moved into one
+// would want the enclosing frame as a capture, and a fused loop is a global
+// and has none.
+let in_a_lambda n = {
+    let xs = list.range 1 (n + 1);
+    list.map (fn k -> list.sum xs + k) [0, 100]
+};
+
+// `n` is read exactly once in this block -- by the line *above* its own `let`,
+// where it still means the parameter. A stage is only written where it is read
+// when the read comes after the binding; this one answered 21 before it did.
+let read_above n = {
+    let a = list.sum (list.range 1 (n + 1));
+    let n = list.sum (list.range 1 4);
+    a
+};
+
+// `length` is no sink this pass knows, so nothing fuses here. The binding is
+// still read where it was written, and the answer is the same either way.
+let no_sink n = { let xs = list.range 1 (n + 1); list.length xs };
+
+// An impure `let` is a statement, not a binding: a block forces it in the order
+// it is written, so moving it would move the effect. `dreams` writes a payload
+// exactly this way -- a fold of impure writes, bound to a name, read after the
+// handle is closed -- and staging it put every write after the close. The order
+// these print in is what holds that line.
+let ordered! () = {
+    let counted = list.fold_strict
+                      (fn acc x -> { console.print! ("step " + to_string x); acc + x })
+                      0 (list.range 1 4);
+    console.print! "after"
+    counted
+};
+
+let main! = {
+    console.print! [folded, folded_hard, summed, multiplied, renamed, repeated];
+    console.print! joined;
+    console.print! [empty_up, empty_down, empty_kept];
+    console.print! [big, named, scaled 3, stays_lazy];
+    console.print! big_float;
+    console.print! impostor;
+    console.print! (counted! ());
+    console.print! [named_stages 10, shadowed 5, shared 10, rebound 10, no_sink 10, read_above 10];
+    console.print! (in_a_lambda 4);
+    console.print! (ordered! ());
+};

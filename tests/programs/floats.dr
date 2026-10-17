@@ -1,0 +1,119 @@
+// A float loop, and what the tier that compiles one must not change.
+//
+// A compiled function carries a float-typed slot as a raw `double` rather than
+// as a pointer to a boxed one, which is what takes a fused `pi` from allocating
+// 866 MB to allocating none. The saving is only allowed if nothing about it can
+// be observed, and that is what this file is: every answer here is the answer
+// the interpreter gives, and the harness runs it under both tiers and compares.
+//
+// The cases that matter are the ones where the two representations disagree
+// about something:
+//
+//   * a NaN, which orders unlike itself and compares equal to itself;
+//   * negative zero, which `0 - x` and a sign flip do not agree about;
+//   * an accumulator that starts as an integer, so the entry guard cannot hold
+//     and the first call is interpreted;
+//   * a parameter that is not a number at all, whose error has to be the one
+//     the interpreter would have raised, from the same place;
+//   * `%` and `/`, whose zero cases differ between integers and floats.
+//
+// Each loop runs far past the tier's threshold, so the compiled body is what
+// answers -- a test that only ever ran interpreted would pass for the wrong
+// reason.
+import std.console;
+
+import std.list;
+import std.math;
+
+// The shape the work was for: a fold over a range with a float accumulator,
+// which deforestation turns into a tail loop and the tier then compiles whole.
+let pi_terms n = list.fold_strict
+    (fn acc k -> acc
+        + 1.0 / _to_float (4 * k - 3)
+        - 1.0 / _to_float (4 * k - 1))
+    0.0
+    (list.range 1 (n + 1));
+
+/// The same loop written by hand, so that what is checked here does not depend
+/// on the fusion pass having run.
+let rec add_halves i hi acc = if i >= hi { acc } else { add_halves (i + 1) hi (acc + 0.5) };
+
+/// The accumulator arrives as an integer. The entry guard cannot hold, so the
+/// first call is handed back to the interpreter; one iteration later it is a
+/// float and every call after that is compiled. The answer must not know.
+let rec from_int i hi acc = if i >= hi { acc } else { from_int (i + 1) hi (acc + 0.25) };
+
+/// A float and an integer meeting in the same expression: the integer is
+/// converted where `arith` would have converted it, and the result is a float.
+let rec mixed i hi acc = if i >= hi { acc } else { mixed (i + 1) hi (acc + i) };
+
+/// Division and remainder, whose float cases are not their integer cases:
+/// `x / 0.0` is an infinity where `x / 0` raises, and `%` is `fmod`.
+let rec wrap i hi acc = if i >= hi { acc } else { wrap (i + 1) hi ((acc + 1.5) % 7.0) };
+
+/// The numeric natives the tier makes rather than calls.
+let rec roots i hi acc =
+    if i >= hi { acc } else { roots (i + 1) hi (acc + math.sqrt (_to_float i)) };
+let rec floors i hi acc =
+    if i >= hi { acc } else { floors (i + 1) hi (acc + math.floor (_to_float i / 3.0)) };
+let rec absum i hi acc =
+    if i >= hi { acc } else { absum (i + 1) hi (acc + math.abs (0.0 - _to_float i)) };
+let rec ints i hi acc =
+    if i >= hi { acc } else { ints (i + 1) hi (acc + _to_int (_to_float i / 2.0)) };
+
+/// A self call that is *not* in tail position, which is the other shape the
+/// tier emits: the body becomes a function of its arguments, and a float
+/// parameter arrives as a `double` rather than through a heap frame.
+let rec halve_sum x n = if n <= 0 { x } else { x + halve_sum (x * 0.5) (n - 1) };
+
+/// A loop over floats that is asked to run on something else. It is made hot
+/// first, so that what raises is the compiled body.
+let rec scale x n = if n <= 0 { x } else { scale (x * 2.0) (n - 1) };
+
+/// A NaN and the two ways it is unlike every other number. `compare` orders
+/// with `<` and `>` and nothing else, so a NaN falls to "neither", which makes
+/// `<=` true; and `==` compares the values before the numbers, so a NaN is
+/// equal to itself when it *is* itself.
+let nan = 0.0 / 0.0;
+let rec nan_order i hi acc =
+    if i >= hi { acc } else { nan_order (i + 1) hi (if nan <= nan { acc + 1.0 } else { acc }) };
+
+/// Negative zero: `0 - 0.0` is positive zero, where flipping the sign bit is
+/// not. The tier subtracts, for exactly this reason.
+let rec negate i hi acc = if i >= hi { acc } else { negate (i + 1) hi (0.0 - acc) };
+
+let n = 200_000;
+
+let main! = {
+    console.print! ("pi:        " + to_string (pi_terms 100_000))
+    console.print! ("halves:    " + to_string (add_halves 0 n 0.0))
+    console.print! ("from_int:  " + to_string (from_int 0 n 0))
+    console.print! ("mixed:     " + to_string (mixed 0 n 0.0))
+    console.print! ("wrap:      " + to_string (wrap 0 n 0.0))
+    console.print! ("roots:     " + to_string (roots 1 n 0.0))
+    console.print! ("floors:    " + to_string (floors 0 n 0.0))
+    console.print! ("absum:     " + to_string (absum 0 n 0.0))
+    console.print! ("ints:      " + to_string (ints 0 n 0))
+    console.print! ("halve_sum: " + to_string (halve_sum 1.0 60))
+    console.print! ("nan_order: " + to_string (nan_order 0 n 0.0))
+    console.print! ("negate:    " + to_string (negate 0 n 1.5))
+    console.print! ("zero:      " + to_string (0.0 - 0.0))
+
+    // Hot, and then handed something that is not a number. The message is the
+    // one `arith` writes, which is the whole point of the slow path going
+    // through it rather than duplicating it.
+    console.print! ("warm:      " + to_string (scale 1.0 1000))
+    let bad = try! { scale "hi" 4 } catch e { to_string e };
+    console.print! ("not a num: " + bad)
+    let worse = try! { roots 1 4 "acc" } catch e { to_string e };
+    console.print! ("bad acc:   " + worse)
+    let notnum = try! { _to_float "x" } catch e { to_string e };
+    console.print! ("to_float:  " + notnum)
+
+    // A float divided by an integer zero raises; divided by a float zero it is
+    // an infinity. Both go through the compiled path above and both must say
+    // what they say interpreted.
+    let dz = try! { add_halves 0 1 (1.0 / 0) } catch e { to_string e };
+    console.print! ("div zero:  " + dz)
+    console.print! ("inf:       " + to_string (1.0 / 0.0))
+}

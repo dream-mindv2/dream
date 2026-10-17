@@ -1,0 +1,24 @@
+import std.console;
+import std.list;
+
+let read : :integer -> Result :integer :atom;
+let read n = if n < 0 { err :negative } else { ok n };
+let doubled n = { let? x = read n; ok (x * 2) };
+
+mod Shadow {
+    let ok x = x + 100;
+    let err x = x - 100;
+    let answer = [ok 1, err 1];
+}
+
+let main! = {
+    console.print! [ok 3, err :bad]
+    console.print! [doubled 4, doubled (-1)]
+    console.print! (read 5 |> Result.map (fn x -> x + 1))
+    console.print! (list.map ok [1, 2, 3])
+    console.print! (list.map err [:a, :b])
+    console.print! Shadow.answer
+    let ok x = x + 10;
+    let err x = x - 10;
+    console.print! [ok 1, err 1]
+};

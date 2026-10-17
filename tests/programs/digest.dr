@@ -1,0 +1,35 @@
+// `io.digest`, `io.digest!` and `io.stat!`: what a build cache is made of.
+//
+// The strings are the FIPS 180-2 examples, so a wrong constant or a padding
+// error at a block boundary fails here rather than as a cache that never
+// hits. The file is written and read back, and its digest has to be the one
+// the same bytes get as a string -- which is the whole contract between the
+// two: a step's key may be worked out from either.
+import std.console;
+import std.io;
+import std.list;
+import std.os;
+import std.str;
+
+let abc56 = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+
+let main! = {
+    console.print! (io.digest "")
+    console.print! (io.digest "abc")
+    console.print! (io.digest abc56)
+    // A million bytes, so the file path crosses its 64 KiB reads.
+    let big = str.repeat 1000000 "a";
+    console.print! (io.digest big)
+
+    let path = "dream-digest-" + to_string (os.pid! ()) + ".tmp";
+    let h = io.open! path :write;
+    strict! (io.write! h abc56)
+    io.close! h
+    console.print! (to_string (io.digest! path == io.digest abc56))
+    let [size, modified, kind] = io.stat! path;
+    console.print! (to_string [size, kind, modified > 0])
+    io.remove! path
+    console.print! (to_string (io.stat! path))
+    let [_, _, dir] = io.stat! ".";
+    console.print! (to_string dir)
+}

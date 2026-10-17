@@ -1,0 +1,52 @@
+// A union's variants are values of their own: `Op.scale 3` is made by its
+// constructor, says it is an `Op`, and is matched by `Op.scale(by)`. A list
+// or an array that looks the same -- `[:push, 1]`, `#[:push, 1]`, `:add` -- is
+// not one, which is what having a type means. `union struct` once made the
+// variants arrays, and is kept as a spelling that means the same thing.
+//
+// A loop hot enough for the JIT matches constructor patterns, and must agree
+// with the interpreter.
+import std.console;
+import std.list;
+import std.types;
+
+union struct Op {
+    push(n : :integer)
+    add
+    scale(by : :integer)
+    shift(by : :integer)
+    clamp(lo : :integer, hi : :integer)
+}
+
+let step : :integer -> Op -> :integer;
+let step acc op = match op {
+    Op.push(n) => n,
+    Op.add => acc + 1,
+    Op.scale(by) => acc * by,
+    Op.shift(by) => acc + by,
+    Op.clamp(lo, hi) => if acc < lo { lo } else if acc > hi { hi } else { acc },
+};
+
+/// What a value is, asked of things that look alike.
+let kind v = match v {
+    Op.push(_) => :op_push,
+    [:push, _] => :list_push,
+    #[:push, _] => :array_push,
+    Op.add => :op_add,
+    :add => :atom_add,
+    _ => :other,
+};
+
+let rec run !i !acc = if i == 0 { acc } else {
+    run (i - 1) (step (step (step acc (Op.scale 3)) (Op.shift 1)) (Op.clamp 0 1000000))
+};
+
+let main! = {
+    console.print! (Op.clamp 1 2)
+    console.print! (list.fold step 0 [Op.push 2, Op.add, Op.scale 5, Op.shift (0 - 4), Op.clamp 0 10])
+    console.print! (list.map kind [Op.push 1, [:push, 1], #[:push, 1], Op.add, :add, Op.scale 2])
+    console.print! [types.accepts Op (Op.push 1), types.accepts Op [:push, 1], types.accepts Op Op.add,
+                    types.accepts Op :add]
+    console.print! [type_of (Op.push 1), Op.push 1 == Op.push 1, Op.push 1 == Op.push 2, Op.add == Op.add]
+    console.print! (run 50000 1)
+};

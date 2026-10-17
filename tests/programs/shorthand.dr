@@ -1,0 +1,52 @@
+import std.console;
+import std.list;
+import std.array;
+import std.map;
+import std.error;
+
+let result_step x = ok (x + 1);
+let option_step x = some (x + 1);
+let result_map : (:integer -> :integer) -> Result :integer :string -> Result :integer :string;
+let result_map = map;
+let result_flatten : Result (Result :integer :string) :string -> Result :integer :string;
+let result_flatten = flatten;
+let unknown_result () = ok 8;
+let boom x = 1 / x;
+let discard acc x = if x == 2 { 7 } else { boom 0 };
+let main! = {
+    console.print! (ok 3 |> map (fn x -> x + 1) |> and_then result_step)
+    console.print! (some 3 |> map (fn x -> x + 1) |> and_then option_step)
+    console.print! (flatten (ok (ok 9)))
+    console.print! (flatten (some (some 10)))
+    console.print! (unwrap_or 0 (err "missing"))
+    console.print! (unwrap_or 0 none)
+    console.print! (map (fn x -> x * 2) [1, 2])
+    console.print! (map (fn x -> x * 2) #[1, 2])
+    console.print! (fold (fn acc x -> acc + x) 0 [1, 2, 3])
+    console.print! (fold (fn acc x -> acc + x) 0 #[1, 2, 3])
+    console.print! (fold (fn acc k v -> acc + v) 0 %{ :a => 1, :b => 2 })
+    console.print! (filter (fn x -> x > 1) [1, 2, 3])
+    console.print! (filter (fn x -> x > 1) #[1, 2, 3])
+    console.print! (result_map (fn x -> x * 2) (ok 4))
+    console.print! (result_flatten (ok (ok 5)))
+    console.print! (list.map flatten [some (some 1), some (some 2)])
+    console.print! (map (fn x -> x + 1) (unknown_result ()))
+    console.print! (fold (fn acc x -> acc + x) 0 (range 0 10000))
+    console.print! (fold_lazy discard 0 [1, 2])
+    console.print! (fold_lazy discard 0 #[1, 2])
+    console.print! (try! { fold discard 0 [1, 2] } catch e { error.kind e })
+    console.print! (try! { fold discard 0 #[1, 2] } catch e { error.kind e })
+    console.print! (fold_lazy (fn _ x -> x) (boom 0) [1])
+    console.print! (ok 1 |> and (ok "next") |> or (ok "fallback"))
+    console.print! (err "first" |> and (boom 0) |> or (ok 7))
+    console.print! (some 1 |> and (some "next") |> or (some "fallback"))
+    console.print! (Option.none |> and (boom 0) |> or (some 7))
+    console.print! (ok 1 |> or (boom 0))
+    console.print! (some 1 |> or (boom 0))
+    console.print! (some 1 |> or_else (fn _ -> boom 0))
+    console.print! (Option.none |> or_else (fn _ -> some 4) |> map (fn x -> x + 1))
+    console.print! (err "bad" |> or_else (fn why -> ok (why + "!")))
+    console.print! (some 1 |> xor none)
+    console.print! (some 1 |> xor (some 2))
+    console.print! (Option.none |> xor none)
+};

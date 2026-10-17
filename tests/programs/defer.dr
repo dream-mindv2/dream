@@ -1,0 +1,93 @@
+import std.console;
+import std.error;
+import std.proc;
+
+let normal! () = {
+    defer! console.print! :outer;
+    defer! console.print! :inner;
+    console.print! :body
+    42
+};
+
+let chained! r = {
+    defer! console.print! :after_chain;
+    let? x = r;
+    Result.ok x
+};
+
+let propagated! () = {
+    defer! console.print! :after_question;
+    let x = Result.error :early?;
+    Result.ok x
+};
+
+let worker! parent = {
+    defer! {
+        proc.sleep! 5
+        // A cleanup may handle its own errors, even during a kill.
+        let v = try! { raise! :cleanup } catch e { :cleaned };
+        send! parent v
+    };
+    send! parent :ready
+    try! { recv! () } catch e { send! parent :caught }
+};
+
+let rec forever !n = forever (n + 1);
+let forcing! parent = {
+    defer! send! parent :forced_cleanup;
+    send! parent :ready
+    try! { strict! (forever 0) } catch e { send! parent :caught }
+};
+
+let main! = {
+    console.print! (normal! ())
+    let raised = try! {
+        defer! console.print! :after_raise;
+        raise! :original
+    } catch e { error.payload e };
+    console.print! raised
+    let failed = try! {
+        defer! console.print! :after_cleanup_failure;
+        defer! raise! :cleanup_failed;
+        1
+    } catch e { error.payload e };
+    console.print! failed
+    let first = try! {
+        defer! raise! :secondary;
+        raise! :first
+    } catch e { error.payload e };
+    console.print! first
+    // An exited inner block finishes cleanup before the outer body continues.
+    {
+        defer! console.print! :nested;
+        console.print! :nested_body
+    }
+    console.print! :after_nested
+    console.print! (chained! (Result.error :early))
+    console.print! (propagated! ())
+    console.print! ({ defer! console.print! :last_statement; })
+    let unreachable = try! {
+        raise! :before_registration
+        defer! console.print! :unreachable;
+    } catch e { error.payload e };
+    console.print! unreachable
+    {
+        let x = 17;
+        defer! {
+            defer! console.print! :cleanup_of_cleanup;
+            console.print! x
+        };
+        console.print! :before_cleanup
+    }
+    let parent = self! ();
+    let p = spawn! $( worker! parent );
+    recv! ()
+    proc.kill! p :stop
+    console.print! (match proc.outcome! p { Result.error(e) => error.kind e, _ => :wrong })
+    console.print! (recv! ())
+    let q = spawn! $( forcing! parent );
+    recv! ()
+    proc.kill! q :stop
+    console.print! (match proc.outcome! q { Result.error(e) => error.kind e, _ => :wrong })
+    console.print! (recv! ())
+}

@@ -1,0 +1,24 @@
+// A process's heap cap holds under a force nobody vouched for.
+//
+// `list.length` is a native that walks its list by forcing each tail in a
+// machine of its own, and nothing can be collected underneath it. The cap was
+// tested against the live data the last collection measured, which under a pin
+// is never measured again -- so walking an endless list that is still held
+// grew the heap until the allocator threw and `bad_alloc` took the VM down.
+// It must raise `:out_of_memory` in the process instead, where `try!` sees it.
+// See "A pinned heap grew past its cap" in docs/notes/vm-performance.md.
+//
+// `pinned_heap_cap.env` makes the cap small, so this fails in a moment.
+import std.console;
+import std.error;
+import std.list;
+
+let count xs = list.length xs;
+
+let main! = {
+    let xs = list.from 1;
+    let got = try! { count xs + list.head xs } catch e { error.kind e };
+    console.print! (to_string got)
+    // The process carries on, and the list it held is still the list.
+    console.print! (to_string (list.take 3 xs))
+};

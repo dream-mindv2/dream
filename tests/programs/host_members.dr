@@ -1,0 +1,36 @@
+// What a host module provides, asked of the runtime that provides it.
+//
+// The compiler cannot answer this: `import std.math` compiles to a lookup that
+// happens while the program runs, so `dreams` knows such a module by name and
+// by nothing else. `lucid` is what wants it -- after a dot on a host module it
+// had nothing to offer at all -- and it is written as an ordinary member of
+// `std.vm` because a tool that runs on the VM should not need a private door.
+//
+// Asked as properties rather than as a list, so that a module gaining a member
+// is not a failing test.
+import std.console;
+import std.list;
+import std.vm;
+
+let names p = list.map (fn m -> list.head m) (vm.host_members p);
+let arity p name =
+    list.first_or () (list.map (fn m -> list.nth 1 m)
+                               (list.filter (fn m -> list.head m == name) (vm.host_members p)));
+
+let main! = {
+    // A module nobody registered is not an error and is not an empty list --
+    // "no such module" and "a module with no members" are different answers.
+    console.print! (vm.host_members "std.nowhere")
+    console.print! (type_of (vm.host_members "std.math"))
+
+    console.print! (list.contains "sqrt" (names "std.math"))
+    console.print! (arity "std.math" "sqrt")
+    console.print! (list.contains "write!" (names "std.io"))
+    console.print! (list.contains "host_members" (names "std.vm"))
+
+    // Every entry is a name and an arity, and the order is the module's own.
+    console.print! (list.all (fn m -> type_of (list.head m) == :string
+                                      && type_of (list.nth 1 m) == :integer)
+                             (vm.host_members "std.os"))
+    console.print! (names "std.math")
+};

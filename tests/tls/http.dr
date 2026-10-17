@@ -1,0 +1,74 @@
+// std.http over TLS: HTTPS at both protocol versions, and ALPN choosing
+// between them. The same fixtures as tls.dr; run by run.sh.
+//
+//     dream http.dream DIR          -- the suite
+//     dream http.dream serve DIR    -- an HTTPS server for curl, its port printed
+
+import std.console;
+import std.error;
+import std.file;
+import std.list;
+import std.map;
+import std.os;
+import std.proc;
+import std.str;
+import std.test;
+import std.vm;
+import std.http;
+import std.http.server;
+
+let fixture! : :string -> :string -> :string;
+let fixture! dir name = match file.read! (dir + "/" + name) {
+    () => raise! ("missing fixture " + name),
+    text => text,
+};
+
+let app : :map;
+let app = server.router
+    |> server.get "/" (fn req -> http.text (http.Request.version req))
+    |> server.get "/big" (fn req -> http.text (str.repeat 200000 "0123456789"))
+    |> server.post "/echo" (fn req -> http.text (http.body req));
+
+let https! : :string -> :map;
+let https! dir = server.serve_with! (server.defaults |> server.Options.set_port 0
+                                     |> server.Options.set_https %{ :identity => fixture! dir "server.p12", :password => "dream" }) app;
+
+/// A GET through TLS trusting the test CA, with extra options.
+let get! : :string -> :map -> :string -> :map -> :any;
+let get! dir s path opts = http.send! (http.request "GET" ("https://localhost:" + to_string (server.port s) + path)
+                                        |> http.Request.set_options (map.merge %{ :tls => %{ :ca => fixture! dir "ca.pem" } } opts));
+
+let suite! : :string -> :never;
+let suite! dir = {
+    let s = https! dir;
+    let cases = [
+        test.case "ALPN agrees on HTTP/2" $( test.eq! (Result.ok "HTTP/2") (Result.map http.body (get! dir s "/" %{})) ),
+        test.case "a client that will not speak it gets HTTP/1.1" $( test.eq! (Result.ok "HTTP/1.1") (Result.map http.body (get! dir s "/" %{ :http2 => false })) ),
+        test.case "a large body over HTTP/2" $( test.eq! (Result.ok 2000000) (Result.map (fn r -> len (http.body r)) (get! dir s "/big" %{})) ),
+        test.case "an untrusted server is refused" $( test.eq! :certificate_untrusted
+            (error.kind (Option.or_unit (Result.reason (http.get! ("https://localhost:" + to_string (server.port s) + "/"))))) ),
+        test.case "many at once through one client" $( {
+            let c = http.client_with! %{ :base => "https://localhost:" + to_string (server.port s), :tls => %{ :ca => fixture! dir "ca.pem" } };
+            let first = http.call! c (http.request "GET" "/");
+            let all = proc.parallel! (list.map (fn i -> $( http.call! c (http.request "POST" "/echo" |> http.with_body (to_string i)) )) (list.range 0 25));
+            http.close_client! c
+            test.eq! [Result.ok "HTTP/2", list.map (fn i -> Result.ok (to_string i)) (list.range 0 25)]
+                     [Result.map http.body first, list.map (fn r -> Result.map http.body r) all]
+        } ),
+        test.case "the server stops, and every connection with it" $( {
+            server.stop! s
+            test.eq! 2 (test.eventually! (fn () -> vm.processes! ()) (fn n -> n <= 2) test.patience)
+        } ),
+    ];
+    test.main_of! [["std.http over TLS", cases]]
+};
+
+let main! = match os.args! () {
+    ["serve", dir] => {
+        let s = https! dir;
+        console.print! (to_string (server.port s))
+        join! (server.Server.acceptor s)
+    },
+    [dir, .._] => suite! dir,
+    _ => suite! "dream/tests/tls",
+};

@@ -1,0 +1,24 @@
+zero
+negative
+the ok atom
+a greeting
+yes
+nothing
+that float
+that char
+empty list
+one: 9
+two: 3
+head 1 rest [2, 3]
+array of two: 3
+empty array
+kind :thing
+other: :zzz
+
+sum:        10
+nested:     6
+as pattern: [3, 4] 7
+lazy elems: :two_cells
+infinite:   3
+order:      :first
+no match:   <error :match_error [7, "match.dr", 56, 56]>

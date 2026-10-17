@@ -1,0 +1,21 @@
+// Interpolated strings: `$"..{x}.."` renders each piece as `to_string` does.
+//
+// Run under the interpreter and the JIT, which must agree; the loop at the end
+// is there to be hot enough for the JIT to take.
+import std.console;
+
+let area r = 3 * r * r;
+
+let rec total !i !acc = if i == 0 { acc } else { total (i - 1) (acc + len $"{i}:{i * 2}") };
+
+let main! = {
+    let name = "disc";
+    let r = 2;
+    console.print! $"the {name} of radius {r} has area {area r}"
+    console.print! $"a list {[1, "x", :y]} and a map {%{:a => 1}}"
+    console.print! $"nested {$"<{r}>"}, a brace \{ and a lone }"
+    console.print! $"no pieces at all"
+    console.print! $"{r}{r}"
+    console.print! (try! { $"lazy pieces still raise: {1 / 0}" } catch e { e })
+    console.print! (total 20000 0)
+};

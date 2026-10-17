@@ -1,0 +1,14 @@
+top level:  [10, 20] [30, 40]
+map:        widget x3
+array:      left right
+block:      15
+params:     [7, 42]
+as:         1 of [1, 2, 3], then [2, 3]
+recursion:  6
+lambda:     [2, 12]
+lazy:       2
+infinite:   3
+effects:    at the let
+            and then 3
+mismatch:   <error :match_error [[1, 2], "destructure.dr", 52, 9]>
+wrong kind: <error :match_error [%{}, "destructure.dr", 18, 14]>

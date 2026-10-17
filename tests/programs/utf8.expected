@@ -1,0 +1,24 @@
+ascii          41 42       -> [65, 66]
+two bytes      C3 A9       -> [233]
+three bytes    E2 82 AC    -> [8364]
+four bytes     F0 9F 98 80 -> [128512]
+shortest three E0 A0 80    -> [2048]
+shortest four  F0 90 80 80 -> [65536]
+before surr.   ED 9F BF    -> [55295]
+after surr.    EE 80 80    -> [57344]
+last scalar    F4 8F BF BF -> [1114111]
+overlong /     C0 AF       -> [65533, 65533]
+overlong NUL   E0 80 80    -> [65533, 65533, 65533]
+overlong four  F0 80 80 AF -> [65533, 65533, 65533, 65533]
+surrogate      ED A0 80    -> [65533, 65533, 65533]
+past 10FFFF    F4 90 80 80 -> [65533, 65533, 65533, 65533]
+lead F5        F5 80 80 80 -> [65533, 65533, 65533, 65533]
+truncated      E2 82       -> [65533, 65533]
+stray cont.    80 41       -> [65533, 65]
+lead then A    C3 41       -> [65533, 65]
+char_of_code D7FF   -> 55295
+char_of_code E000   -> 57344
+char_of_code D800   -> <error :type_error that is not a Unicode scalar value>
+char_of_code DFFF   -> <error :type_error that is not a Unicode scalar value>
+char_of_code 110000 -> <error :type_error that is not a Unicode scalar value>
+round trip -> true

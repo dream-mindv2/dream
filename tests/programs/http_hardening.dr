@@ -1,0 +1,41 @@
+import std.console;
+import std.error;
+import std.http;
+import std.http.reader;
+import std.list;
+import std.str;
+
+let framing! hs = try! { let state = http.body_state! hs false; strict! state; state } catch e { error.kind e };
+let buffered text = reader.Reader.make () text 0;
+let piece! text state = try! { let result = http.next_piece! (buffered text) state; strict! result; :ok } catch e { error.kind e };
+let head! text limit = try! { let result = http.read_head! (buffered text) limit; strict! result; :ok } catch e { error.kind e };
+let main! = {
+    console.print! (to_string (list.map framing! [
+        [], [["content-length", "12"]], [["transfer-encoding", "Chunked"]],
+        [["content-length", "1"], ["content-length", "2"]],
+        [["content-length", "1"], ["content-length", "1"]],
+        [["transfer-encoding", "chunked"], ["content-length", "1"]],
+        [["transfer-encoding", "xchunked"]], [["transfer-encoding", "chunked, gzip"]],
+        [["transfer-encoding", "gzip, chunked"]],
+        [["transfer-encoding", "chunked"], ["transfer-encoding", "chunked"]],
+        [["content-length", "+1"]], [["content-length", "0x10"]],
+        [["content-length", "1, 1"]], [["content-length", "-1"]], [["content-length", ""]]
+    ]))
+    console.print! (to_string [
+        head! "GET / HTTP/1.1\r\nHost: example\r\n\r\n" 100,
+        head! "GET / HTTP/1.1\r\nBad Name: x\r\n\r\n" 100,
+        head! "GET / HTTP/1.1\r\nBad(Name): x\r\n\r\n" 100,
+        head! "GET / HTTP/1.1\r\nX: a\rb\r\n\r\n" 100,
+        head! (str.repeat 10 "\r\n" + "GET / HTTP/1.1\r\n\r\n") 8,
+        head! "GET / HTTP/1.1\nHost: example\n\n" 100
+    ])
+    console.print! (to_string [
+        piece! "\r\n0\r\n\r\n" [:chunk_end],
+        piece! "xx0\r\n\r\n" [:chunk_end],
+        piece! "0\n\n" [:chunked, 0],
+        piece! " 1\r\nx\r\n0\r\n\r\n" [:chunked, 0],
+        piece! "0\r\ninvalid\r\n\r\n" [:chunked, 0],
+        piece! ("0\r\n" + str.repeat 12000 "x: y\r\n" + "\r\n") [:chunked, 0],
+        piece! "0\r\nx: y\r\n\r\n" [:chunked, 0]
+    ])
+}

@@ -1,0 +1,9 @@
+[package]
+name = "ffi_test"
+version = "0.1.0"
+entry = "ffi.dr"
+
+[build]
+# The compiler the library is built with, when one is named: `CC` for the C
+# itself, and `CXX` for the family the toolchain is asked to be.
+env = ["CC", "CXX"]

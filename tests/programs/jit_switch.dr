@@ -1,0 +1,41 @@
+import std.console;
+
+let atom v = match v { :a => 10, :b => 20, :c => 30, _ => 40 };
+let head v = match v { [:a, ..] => 1, [:b, ..] => 2, [:c, ..] => 3, _ => 4 };
+let mixed v = match v { :a => 1.5, :b => 2, :c => 3.5, _ => 4 };
+let floats v = match v { :a => 1.5, :b => 2.5, :c => 3.5, _ => 4.5 };
+let rec loop v n acc = match v {
+    :a => if n == 0 { acc } else { loop :b (n - 1) (acc + 1.0) },
+    :b => if n == 0 { acc } else { loop :c (n - 1) (acc + 2.0) },
+    :c => if n == 0 { acc } else { loop :a (n - 1) (acc + 3.0) },
+    _ => acc + n,
+};
+let required v = match v { :a => 1, :b => 2, :c => 3 };
+let rec recur v n = match v {
+    :a => if n == 0 { 0 } else { 1 + recur :b (n - 1) },
+    :b => if n == 0 { 0 } else { 2 + recur :c (n - 1) },
+    :c => if n == 0 { 0 } else { 3 + recur :a (n - 1) },
+    _ => n,
+};
+let main! = {
+    console.print! (atom :a)
+    console.print! (atom :b)
+    console.print! (atom :c)
+    console.print! (atom :other)
+    console.print! (atom 3)
+    console.print! (head [:a])
+    console.print! (head [:b, 1 / 0])
+    console.print! (head [:c])
+    console.print! (head [:other])
+    console.print! (head [3])
+    console.print! (head [])
+    console.print! (head 3)
+    console.print! (try! { head [1 / 0] } catch _ { 99 })
+    console.print! (mixed :a)
+    console.print! (mixed :b)
+    console.print! (floats :c)
+    console.print! (loop :a 12000 0.0)
+    console.print! (required :c)
+    console.print! (try! { required :missing } catch _ { 99 })
+    console.print! (recur :a 12)
+};

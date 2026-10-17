@@ -1,0 +1,12 @@
+the atoms this program writes -> [:ok, :error, :pending]
+a name it writes -> :ok
+  and it is that very atom -> true
+another of them -> :pending
+one written nowhere -> ()
+the empty name -> ()
+asking did not create it -> ()
+a name built at run time -> :ok
+not a string -> <error :type_error to_existing_atom needs a string>
+an atom is not a name -> <error :type_error to_existing_atom needs a string>
+found 100000 times -> 100000
+missed 100000 times -> 0

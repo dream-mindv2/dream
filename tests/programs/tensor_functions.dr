@@ -1,0 +1,100 @@
+// The `std.tensor` functions beyond the operators: elementwise comparisons,
+// powers and roundings, folds along an axis, `repeat`, and the row
+// operations -- `slice`, `take`, `concat`, `one_hot` -- with the exact
+// answers they must give on the host. Large inputs exercise the deferred
+// paths, where a `repeat` and the folds read a fused program.
+import std.console;
+import std.error;
+import std.list;
+import std.tensor;
+
+let main! = {
+    console.print! (tensor.random 17 [3, 4] == tensor.random_like 17 (tensor.zeros [3, 4]))
+    console.print! (tensor.sum_tensor (tensor.range 10) == tensor.of_list [45.0])
+    let a = tensor.of_list [[1, -2, 3], [4, 5, -6]];
+
+    // --- elementwise, as functions ---
+    console.print! (tensor.max a 0)
+    console.print! (tensor.min 0 a)
+    console.print! (tensor.pow a 2)
+    console.print! (tensor.gt a 0)
+    console.print! (tensor.le a 3)
+    console.print! (tensor.eq a [4, 5, -6])
+    console.print! (tensor.ne a 5)
+    console.print! (tensor.sign a)
+    console.print! (tensor.floor (a * 0.5))
+    console.print! (tensor.ceil (a * 0.5))
+    console.print! (tensor.round (a * 0.5))
+    console.print! (tensor.erf (tensor.of_list [0, 1]))
+    console.print! (tensor.fill_like a 7)
+
+    // --- folds along an axis ---
+    console.print! (tensor.max_axis 1 a)
+    console.print! (tensor.min_axis 0 a)
+    console.print! (tensor.argmax_axis 1 a)
+    console.print! (tensor.argmin_axis 0 a)
+    console.print! (tensor.argmax_axis 0 [3, 9, 9, 2])
+    console.print! (tensor.max_axis 0 [3, 9, 2])
+    console.print! (tensor.sum_axis 1 (tensor.reshape [2, 3, 2] (tensor.range 12)))
+    console.print! (tensor.argmax_axis 1 (tensor.reshape [2, 3, 2] (tensor.range 12)))
+
+    // --- repeat: a value per row, across the row ---
+    console.print! (tensor.repeat 3 [1, 2])
+    console.print! (a - tensor.repeat 3 (tensor.max_axis 1 a))
+
+    // --- rows ---
+    console.print! (tensor.slice 1 1 a)
+    console.print! (tensor.take [1, 0, 1] a)
+    console.print! (tensor.take (tensor.of_list [1, 1]) a)
+    console.print! (tensor.concat [a, tensor.slice 0 1 a])
+    console.print! (tensor.one_hot 4 [0, 3, 1])
+    console.print! (tensor.of_bytes [2, 3] (tensor.to_bytes a) == a)
+
+    // --- windows: im2col and its reverse ---
+    let img = tensor.reshape [1, 3, 3, 1] (tensor.range 9);
+    console.print! (tensor.im2col 2 2 1 0 img)
+    console.print! (tensor.shape (tensor.im2col 3 3 1 1 img))
+    console.print! (tensor.im2col 2 2 2 1 img)
+    console.print! (tensor.col2im [1, 3, 3, 1] 2 2 1 0 (tensor.im2col 2 2 1 0 img))
+    console.print! (tensor.col2im [1, 3, 3, 1] 3 3 1 1 (tensor.fill_like (tensor.im2col 3 3 1 1 img) 1))
+    console.print! (tensor.shape (tensor.im2col 3 3 2 0 (tensor.zeros [2, 7, 8, 3])))
+
+    // --- batches of products, and axes reordered ---
+    let ab = tensor.reshape [2, 2, 3] (tensor.range 12);
+    let bb = tensor.reshape [2, 3, 2] (tensor.range 12);
+    console.print! (ab @ bb)
+    console.print! (ab @ tensor.of_list [[1, 0], [0, 1], [1, 1]])
+    console.print! (tensor.permute [1, 0] (tensor.of_list [[1, 2, 3], [4, 5, 6]]))
+    console.print! (tensor.permute [0, 2, 1] ab)
+    console.print! (tensor.shape (tensor.permute [2, 0, 3, 1] (tensor.zeros [2, 3, 4, 5])))
+    console.print! (tensor.permute [1, 0, 2] (tensor.permute [1, 0, 2] (tensor.random 3 [40, 50, 3])) == tensor.random 3 [40, 50, 3])
+    console.print! (tensor.permute [0, 2, 1] (tensor.random 4 [5, 30, 40]) == tensor.concat (list.map (fn i -> tensor.reshape [1, 40, 30] (tensor.transpose (tensor.random 4 [5, 30, 40]).[i])) (list.range 0 5)))
+
+    // --- random normals ---
+    console.print! (tensor.shape (tensor.normal 1 [3, 5]))
+    console.print! (tensor.normal 4 [6] == tensor.normal 4 [6])
+    console.print! (math_abs (tensor.mean (tensor.normal 3 [100000])) < 0.01)
+
+    // --- large, through the deferred paths ---
+    let big = tensor.random 1 [300, 50] - 0.5;
+    let m = tensor.repeat 50 (tensor.max_axis 1 big);
+    console.print! (tensor.maximum (big - m))
+    console.print! (tensor.sum (tensor.eq (tensor.argmax_axis 1 big) (tensor.argmax_axis 1 (big * 2.0 + 1.0))))
+    console.print! (tensor.sum (tensor.max_axis 0 (big * 2.0)) == 2.0 * tensor.sum (tensor.max_axis 0 big))
+    console.print! (math_abs (tensor.sum (tensor.repeat 50 (tensor.sum_axis 1 big)) - 50.0 * tensor.sum (tensor.sum_axis 1 big)) < 1.0e-9)
+
+    // --- errors ---
+    console.print! (kind! $( tensor.slice 2 2 a ))
+    console.print! (kind! $( tensor.take [5] a ))
+    console.print! (kind! $( tensor.concat [a, tensor.zeros [2, 2]] ))
+    console.print! (kind! $( tensor.max_axis 2 a ))
+    console.print! (kind! $( tensor.of_bytes [2] "abc" ))
+    console.print! (kind! $( tensor.im2col 4 4 1 0 img ))
+    console.print! (kind! $( ab @ ab ))
+    console.print! (kind! $( tensor.permute [0, 0, 1] ab ))
+    console.print! (kind! $( tensor.col2im [1, 3, 3, 1] 2 2 1 0 (tensor.zeros [3, 4]) ))
+};
+
+let kind! thunk = try! { thunk () } catch e { error.kind e };
+
+let math_abs x = if x < 0.0 { 0.0 - x } else { x };

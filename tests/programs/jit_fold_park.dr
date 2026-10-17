@@ -1,0 +1,18 @@
+// A compiled lazy fold whose function parks. The fold answers its accumulator,
+// a chain of suspensions it built, and forcing that chain runs the function --
+// which joins a process, and so parks. A park under compiled code retries the
+// call from its frame, so a fold that forced its own answer built the chain
+// again and ran every step's effects a second time. Each step must print once.
+import std.list;
+import std.console;
+
+let slow n = list.sum (list.range 0 n);
+let work! t = spawn! $( slow t );
+
+let go! xs = list.fold_lazy (fn acc x -> {
+    let v = join! (work! (x * 20000));
+    console.print! ("step " + to_string x);
+    acc + v
+}) 0 xs;
+
+let main! = console.print! (to_string (go! (list.range 0 5)));

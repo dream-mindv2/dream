@@ -1,0 +1,79 @@
+// What a signature's `:float` lets the JIT do, and what it must not change.
+//
+// A parameter a signature declares `:float` is recorded in the image (`TYPE`,
+// docs/bytecode-format.md) and the JIT carries it as a raw double. The types
+// are gradual, so that is a guess about the caller: code with no signature of
+// its own may pass such a parameter an integer, the checker has nothing to say
+// about it, and the program is owed the answer the interpreter gives. So every
+// value a hint describes is guarded, and a guard that fails hands the call
+// back. This file is the cases that must come out the same under both tiers:
+//
+//   * a declared-float loop given floats, which is the case the hint is for;
+//   * the same loop given integers, through a caller with no signature --
+//     integer arithmetic, integer answers, and enough calls that the function
+//     is given up (`Jit::note_bail`) and still answers correctly after;
+//   * a declared-float helper called from a compiled loop, with floats (the
+//     typed variant) and with integers (the generic one);
+//   * a declared-float recursion, whose answer comes back as a raw double;
+//   * a first iteration that raises, which must raise what it raised before.
+
+import std.console;
+
+// --- a loop the hint is for -------------------------------------------------
+//
+// No float literal in its self call, so nothing but the signature says that
+// `x`, `hi`, `dx` and `acc` are floats.
+
+let integrate : :float -> :float -> :float -> :float -> :float;
+let rec integrate x hi dx acc =
+    if x >= hi { acc } else { integrate (x + dx) hi dx (acc + x * dx) };
+
+// --- the same loop, handed integers ------------------------------------------
+//
+// `untyped` has no signature, so passing it integers is fine by the checker.
+
+let untyped a b c d = integrate a b c d;
+let rec many_ints i n acc =
+    if i >= n { acc } else { many_ints (i + 1) n (acc + untyped 0 i 1 0) };
+
+// --- a helper called from a compiled loop --------------------------------------
+
+let term : :float -> :float -> :float;
+let term k w = w / (k * k + 1.0);
+
+let rec sum_terms i n acc =
+    if i >= n { acc } else { sum_terms (i + 1) n (acc + term (_to_float i) 2.0) };
+
+// The same helper handed integers: `k * k + 1.0` is a float whatever `k` is,
+// but `w / ..` keeps the integer `w` an integer only until the float arrives.
+let loose k w = term k w;
+let rec sum_loose i n acc =
+    if i >= n { acc } else { sum_loose (i + 1) n (acc + loose i 2) };
+
+// --- a recursion whose answer is a double -------------------------------------
+
+let power : :float -> :integer -> :float;
+let rec power x n = if n == 0 { 1.0 } else { x * power x (n - 1) };
+
+let rec sum_powers i n acc =
+    if i >= n { acc } else { sum_powers (i + 1) n (acc + power 1.0001 (i % 20)) };
+
+let loose_power x n = power x n;
+
+// --- a first iteration that raises ----------------------------------------------
+
+let halve : :float -> :float -> :float;
+let rec halve x floor = if x < floor { x } else { halve (x / 2.0) floor };
+let not_a_number y = halve y 1.0;
+
+let main! = {
+    console.print! (integrate 0.0 3.0 0.001 0.0)
+    console.print! (untyped 0 10 1 0)
+    console.print! (many_ints 0 200 0)
+    console.print! (sum_terms 0 100000 0.0)
+    console.print! (sum_loose 0 1000 0.0)
+    console.print! (sum_powers 0 10000 0.0)
+    console.print! (loose_power 2 10)
+    console.print! (halve 1000.0 1.0)
+    console.print! (try! { not_a_number "text" } catch e { e })
+};

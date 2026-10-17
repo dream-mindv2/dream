@@ -1,0 +1,97 @@
+// An argument is evaluated when it is used, and not before -- including when
+// the machine is allowed to compute it early.
+//
+// `thunk_for` does not suspend an argument that is one addition, subtraction or
+// multiplication of two numbers it already has: a Thunk, a Blackhole write, an
+// Indirect write, a continuation and a reduction, to save an add. On `fib` that
+// suspension was 43% of everything the program allocated.
+//
+// The reason it is allowed to is that nothing about it can be observed, and
+// that is exactly what this file checks. Computing an argument early is
+// invisible only while it cannot raise, cannot diverge and cannot force
+// anything, so division is left out (`x / 0` raises), overflow falls back to a
+// thunk, and an operand that is not already a number is not read at all. Each
+// case below would print an error instead of a number if that line were
+// crossed.
+import std.console;
+
+/// Never looks at its argument. Under call-by-need nothing in it is evaluated.
+let ignore x = 42;
+
+let rec count_down n acc = if n == 0 { acc } else { count_down (n - 1) (acc + 1) };
+
+/// An infinite list. Nothing may walk it further than it has already been built.
+let rec forever n = _list_cons n (forever (n + 1));
+
+/// A list whose third element raises when forced.
+let landmine = _list_cons 1 (_list_cons 2 (_list_cons (1 / 0) []));
+
+/// A call, so that passing one as an argument to a native is passing the shape
+/// `fill_native_args` exists for: an argument that has to be evaluated and
+/// cannot be read.
+let shout s = _str_concat [s, "!"];
+
+let main! = {
+    // Division by zero: raises when forced, so it must not be forced.
+    console.print! (to_string (ignore (1 / 0)))
+    console.print! (to_string (ignore (7 % 0)))
+    // A type error: `-` on a string raises, so the operand must not be read.
+    console.print! (to_string (ignore ("a" - 1)))
+    // Overflow: the eager path must decline it rather than raise or wrap.
+    let big = 4611686018427387903;
+    console.print! (to_string (ignore (big * big)))
+    console.print! (to_string (ignore (big + big)))
+    // An operand that is itself unevaluated work must stay unevaluated.
+    console.print! (to_string (ignore ((1 / 0) + 1)))
+
+    // And when the argument *is* used, the answer is the arithmetic, whether it
+    // was suspended or computed early.
+    console.print! (to_string (count_down 1000 0))
+    console.print! (to_string (big + 1 - 1 == big))
+    // Overflow still overflows into the right answer, not a wrapped one.
+    console.print! (to_string (ignore (big * 2) + len "ok"))
+
+    // `c.[k]` as an argument. `thunk_for` reads an array in range and the
+    // already-built prefix of a list without suspending them, so each of these
+    // is a case where doing so must still be invisible.
+    //
+    // An element that raises must not be reached just because its cell has
+    // been built.
+    console.print! (to_string (ignore (landmine.[2])))
+    // An index past the end: the answer is the default, and asking for it must
+    // not have raised on the way.
+    console.print! (to_string (landmine.[9 else :missing]))
+    // An infinite list, indexed shallowly: the walk may not run past what
+    // exists, and this must terminate.
+    console.print! (to_string ((forever 10).[3]))
+    console.print! (to_string (ignore ((forever 10).[1000000])))
+    // An array, read in range and out of it.
+    let arr = _array_of_list [10, 20, 30];
+    console.print! (to_string (arr.[1] + arr.[2]))
+    console.print! (to_string (arr.[7 else 0]))
+    console.print! (to_string (ignore (arr.[7])))
+
+    // A native's own arguments. A native declares which of them it forces, and
+    // those are evaluated where they stand rather than suspended and forced one
+    // step later (`fill_native_args`). The ones it does not declare are
+    // suspended exactly as before. Both halves of that have to be invisible.
+    //
+    // A strict argument that is a call, and one whose argument is itself a
+    // native call -- the second re-enters the same path with the argument list
+    // half filled.
+    console.print! (to_string (len (shout "ok")))
+    console.print! (to_string (len (_str_concat [shout "a", "bc"])))
+    // A strict argument that raises raises where it stood, and `try!` sees the
+    // error the suspension would have delivered.
+    console.print! (to_string (try! { len (to_string (1 / 0)) } catch e { :caught }))
+    // A lazy argument is still lazy: `cons` forces neither of its own, so a
+    // cell whose tail raises can be built and its head read.
+    console.print! (to_string ((_list_cons 5 (1 / 0)).[0]))
+    // The callee is read back out of its node once per argument evaluated, so
+    // it has to be the same native however it was named -- as a member of a
+    // module above, as a local here, as a capture below.
+    let ts = to_string;
+    console.print! (ts (shout "local"))
+    let via_capture = fn s -> ts (shout s);
+    console.print! (via_capture "capture")
+};

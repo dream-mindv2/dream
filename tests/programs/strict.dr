@@ -1,0 +1,33 @@
+// `strict!` evaluates a value all the way down, now.
+//
+// Laziness is the default and usually right, but it has one sharp edge: an
+// effect sitting in a lazy position does not happen until something forces it.
+// `list.map (fn x -> spawn! ..) xs` builds a list of *thunks*, and each spawn
+// only runs when its element is forced -- so joining them one at a time runs
+// them one at a time, which is the opposite of what the code appears to say.
+import std.console;
+import std.list;
+
+let counter! () = {
+    let msg = recv! ();
+    msg * 2
+};
+
+let main! = {
+    // Forced deeply, so every `spawn!` has run by the time this returns.
+    let ps = strict! (list.map (fn n -> spawn! $( counter! () )) (list.range 0 4));
+    console.print! ("spawned:  " + to_string (list.length ps))
+
+    // All four are already waiting on a message, which they could not be if
+    // the spawns were still thunks.
+    let sent = strict! (list.map (fn p -> send! p 21) ps);
+    console.print! ("sent:     " + to_string (list.length sent))
+    console.print! ("replies:  " + to_string (list.map (fn p -> join! p) ps))
+
+    // It hands back what it forced, so it composes in an expression.
+    console.print! ("returns:  " + to_string (strict! [1, [2, [3]]]))
+    console.print! ("block:    " + to_string (strict! { let a = 2 + 3; [a, a * 2] }))
+
+    // Forcing something already forced is free and changes nothing.
+    console.print! ("idempotent: " + to_string (strict! (strict! [1, 2])))
+};

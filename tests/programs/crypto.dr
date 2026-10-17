@@ -1,0 +1,82 @@
+// `std.crypto`: every digest, MAC and derivation against published vectors.
+//
+// The inputs are chosen for the boundaries the code has: an empty message, one
+// that fills a 64-byte block to where the length no longer fits (55 and 56
+// bytes), the same for SHA-512's 128-byte block (111 and 112), and a million
+// bytes, so a bug in carrying a partial block between updates shows. The
+// expected digests, MACs and keys were computed by Python's `hashlib` and
+// `hmac`, which share no code with the VM, and agree with the RFCs' own.
+import std.console;
+import std.crypto;
+import std.error;
+import std.file;
+import std.list;
+import std.str;
+
+let hashes : [:atom];
+let hashes = [:md5, :sha1, :sha256, :sha384, :sha512];
+
+let messages : [:string];
+let messages = ["", "abc", str.repeat 55 "a", str.repeat 56 "a", str.repeat 111 "a",
+                str.repeat 112 "a", str.repeat 1000000 "a"];
+
+let show! : :string -> :unit;
+let show! line = console.print! line;
+
+let show_all! : [:string] -> :unit;
+let show_all! lines = console.print! (str.join_str "\n" lines);
+
+let main! = {
+    show_all! (list.flat_map (fn alg -> list.map (fn m -> crypto.hex (crypto.digest alg m)) messages) hashes)
+    // The named members are the same function.
+    show! (to_string (crypto.sha256 "abc" == crypto.digest :sha256 "abc"))
+
+    // HMAC: RFC 4231 cases 1, 2 and 6 (a key longer than a block).
+    let key1 = str.repeat 20 (str.of_bytes [0x0b]);
+    let key6 = str.repeat 131 (str.of_bytes [0xaa]);
+    show_all! (list.flat_map (fn alg -> list.map crypto.hex [
+        crypto.hmac alg key1 "Hi There",
+        crypto.hmac alg "Jefe" "what do ya want for nothing?",
+        crypto.hmac alg key6 "Test Using Larger Than Block-Size Key - Hash Key First",
+    ]) hashes)
+
+    // PBKDF2: RFC 6070's SHA-1 cases, and SHA-256 with a length that is not a
+    // whole number of blocks.
+    show! (crypto.hex (crypto.pbkdf2 :sha1 "password" "salt" 1 20))
+    show! (crypto.hex (crypto.pbkdf2 :sha1 "password" "salt" 4096 20))
+    show! (crypto.hex (crypto.pbkdf2 :sha1 "passwordPASSWORDpassword" "saltSALTsaltSALTsaltSALTsaltSALTsalt" 4096 25))
+    show! (crypto.hex (crypto.pbkdf2 :sha256 "password" "salt" 4096 32))
+    show! (crypto.hex (crypto.pbkdf2 :sha256 "password" "salt" 2 45))
+
+    // HKDF: RFC 5869 cases 1 and 3 (no salt, no info).
+    let ikm = str.repeat 22 (str.of_bytes [0x0b]);
+    let salt = str.of_bytes (list.range 0 13);
+    let info = str.of_bytes (list.range 0xf0 0xfa);
+    show! (crypto.hex (crypto.hkdf :sha256 ikm salt info 42))
+    show! (crypto.hex (crypto.hkdf :sha256 ikm "" "" 42))
+
+    // Comparison, combination and spelling.
+    show! (to_string [crypto.equal "abc" "abc", crypto.equal "abc" "abd", crypto.equal "abc" "ab"])
+    show! (crypto.hex (crypto.xor (str.of_bytes [0x0f, 0xf0]) (str.of_bytes [0xff, 0xff])))
+    show! (to_string [crypto.hex (crypto.unhex "00fF10"), crypto.unhex "0g", crypto.unhex "abc"])
+    show! (to_string (list.map crypto.base64 ["", "f", "fo", "foo", "foob", "fooba", "foobar"]))
+    show! (to_string (list.map crypto.unbase64 ["", "Zg==", "Zm8=", "Zm9vYmFy", "Zg=", "Z===", "Zm=v", "Zm9v!A=="]))
+
+    // Randomness: the right length, and not the same twice.
+    let r1 = crypto.random_bytes! 32;
+    let r2 = crypto.random_bytes! 32;
+    show! (to_string [len r1, len r2, r1 == r2, len (crypto.random_bytes! 0)])
+
+    // A hash that is not one is an error that says which ones are.
+    show! (to_string (try! { crypto.digest :sha3 "x" } catch e { error.kind e }))
+
+    // A file's digest is its contents', read by the VM rather than through
+    // the heap: the million bytes above, from a file, under every hash.
+    let path = "/tmp/dream-crypto-" + file.scratch_suffix! ();
+    let million = str.repeat 1000000 "a";
+    file.write! path million
+    show! (to_string (list.map (fn alg -> crypto.digest_file! alg path == crypto.digest alg million) hashes))
+    show! (to_string [try! { crypto.digest_file! :md5 (path + ".none") } catch e { error.kind e },
+                      try! { crypto.digest_file! :md5 "/tmp" } catch e { error.kind e }])
+    file.remove_all! path
+}

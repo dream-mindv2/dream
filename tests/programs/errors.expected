@@ -1,0 +1,5 @@
+divide:   :divide
+type:     :type_error
+custom:   <error :error :custom>
+no raise: 10
+nested:   :inner

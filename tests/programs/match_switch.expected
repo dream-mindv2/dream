@@ -1,0 +1,28 @@
+empty
+none
+other
+circle 2
+big square
+square 3
+rect 6
+half rect 4
+tri of 3
+pair :named
+something else
+pair 1
+pair circle
+pair :unknown
+something else
+something else
+something else
+a 5
+b one
+fallback
+c
+fallback
+cell
+not a cell
+3
+<error :match_error [[:d], "match_switch.dr", 55, 21]>
+<error :divide_by_zero division by zero>
+<error :match_error [7, "match_switch.dr", 55, 21]>

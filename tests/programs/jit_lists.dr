@@ -1,0 +1,119 @@
+// Interpreter/JIT parity for list and map code: the shapes the tier refused
+// until it could build and read data, suspend what it must not evaluate, call
+// a closure, and compile `e + f ..` recursion as a loop. `jit_lists.jit` names
+// every function below that must compile; the e2e harness runs this under both
+// tiers with a threshold of one, so each of them runs compiled from its first
+// call, and the two outputs must agree.
+import std.console;
+
+// --- walking a list ----------------------------------------------------------
+
+// The strict consumer: the empty test, the head and the tail, all inline.
+let rec sum_list !acc xs = if _list_is_empty xs { acc } else { sum_list (acc + xs.[0]) (_list_tail xs) };
+
+// The same through `match`, which lowers to its own natives.
+let rec sum_match !acc xs = match xs { [] => acc, [x, ..rest] => sum_match (acc + x) rest };
+
+// --- recursion that is a loop ------------------------------------------------
+//
+// `1 + len (tail xs)` is not a tail call, and was a machine call a level --
+// given back to the interpreter for good past a few thousand levels. Now it is
+// a loop carrying the pending sum, and these are the ways that can go wrong.
+let rec len_rec xs = if _list_is_empty xs { 0 } else { 1 + len_rec (_list_tail xs) };
+let rec total xs = match xs { [] => 0, [x, ..rest] => x + total rest };
+// A base case that is not a number: the pending sum has nowhere to go, and the
+// call must end exactly as the interpreter ends it.
+let rec total_onto xs base = if _list_is_empty xs { base } else { xs.[0] + total_onto (_list_tail xs) base };
+
+// --- a tail call written through a name --------------------------------------
+//
+// `rest` is read as the answer on one path and handed to a cell on the other.
+// Skipping an element is a loop; keeping one suspends the rest.
+let rec evens xs =
+    if _list_is_empty xs { [] }
+    else {
+        let x = xs.[0];
+        let rest = evens (_list_tail xs);
+        if x % 2 == 0 { _list_cons x rest } else { rest }
+    };
+
+// --- building ----------------------------------------------------------------
+
+// The accumulator is never forced by the loop: it is a lazy parameter, and the
+// cell is built in place rather than suspended.
+let rec upto i n acc = if i > n { acc } else { upto (i + 1) n (_list_cons i acc) };
+let rec rev acc xs = if _list_is_empty xs { acc } else { rev (_list_cons (xs.[0]) acc) (_list_tail xs) };
+// A producer: the tail is suspended, so this is only ever as long as it is used.
+let rec from n = _list_cons n (from (n + 1));
+let rec take n xs = if n <= 0 { [] } else { _list_cons (xs.[0]) (take (n - 1) (_list_tail xs)) };
+// A lazy element that must never be evaluated: the division is suspended.
+let rec pairs i n acc = if i >= n { acc } else { pairs (i + 1) n (_list_cons [i, i / 0] acc) };
+
+// --- maps and arrays ---------------------------------------------------------
+
+let rec build_map i n m = if i >= n { m } else { build_map (i + 1) n (m.[i => i * 2]) };
+let rec read_map i n m !acc = if i >= n { acc } else { read_map (i + 1) n m (acc + m.[i]) };
+let rec read_missing i n m !acc = if i >= n { acc } else { read_missing (i + 1) n m (acc + m.[i else 1000]) };
+let rec sum_arr i n a !acc = if i >= n { acc } else { sum_arr (i + 1) n a (acc + a.[i]) };
+let rec count_words ws m =
+    if _list_is_empty ws { m }
+    else { let w = ws.[0]; count_words (_list_tail ws) (m.[w => m.[w else 0] + 1]) };
+
+// --- calling what it was given -------------------------------------------------
+
+let rec fold_with f !acc xs = if _list_is_empty xs { acc } else { fold_with f (f acc (xs.[0])) (_list_tail xs) };
+// Handed an impure function through a pure parameter, which the purity check
+// cannot see through. Compiled code orders no effects, so the call is given back
+// to the interpreter before the effect -- which must happen once per element,
+// in order, as it does interpreted.
+let rec each f n = if n <= 0 { 0 } else { f n + each f (n - 1) };
+let noisy! x = { console.print! ("side " + to_string x); x };
+let rec any_of pred xs = if _list_is_empty xs { false } else { if pred (xs.[0]) { true } else { any_of pred (_list_tail xs) } };
+
+let main! = {
+    let n = 200000;
+    let xs = strict! (upto 1 n []);
+    console.print! (sum_list 0 xs)
+    console.print! (sum_match 0 xs)
+    console.print! (len_rec xs)
+    console.print! (total xs)
+    console.print! (total [1, 2, 3])
+    console.print! (total [])
+
+    // A float among the integers: the sum is the interpreter's float sum.
+    console.print! (total [1, 2, 0.5, 4])
+    // One suffix sum leaves the fixnum range though the total does not: it is
+    // a bignum on the way and a fixnum again at the end, in either tier.
+    console.print! (total [0 - 2305843009213693952, 2305843009213693952, 2305843009213693952])
+    console.print! (total [2305843009213693952, 2305843009213693952, 0 - 2305843009213693952])
+    // An element that cannot be added: the same error, from the same place.
+    console.print! (try! { total [1, "two", 3] } catch e { e })
+    console.print! (try! { total_onto [1, 2] "base" } catch e { e })
+    console.print! (total_onto [1, 2] 0.25)
+    console.print! (total_onto [1, 2, 3] 10)
+
+    console.print! (len (evens xs))
+    console.print! (take 5 (evens (from 1)))
+    console.print! (take 5 (from 7))
+    console.print! (len (rev [] xs))
+    console.print! (rev [] [1, 2, 3])
+    console.print! (len (pairs 0 1000 []))
+    console.print! ((pairs 0 3 []).[0].[0])
+
+    let m = strict! (build_map 0 50000 %{});
+    console.print! (read_map 0 50000 m 0)
+    console.print! (read_missing 49990 50010 m 0)
+    console.print! (try! { read_map 49990 50010 m 0 } catch e { e })
+    console.print! (sum_arr 0 5 #[1, 2, 3, 4, 5] 0)
+    console.print! (try! { sum_arr 0 6 #[1, 2, 3, 4, 5] 0 } catch e { e })
+    let words = ["a", "b", "a", "c", "b", "a"];
+    let counts = count_words words %{};
+    console.print! ([counts.["a"], counts.["b"], counts.["c"]])
+
+    console.print! (fold_with (fn a b -> a + b * b) 0 [1, 2, 3, 4])
+    console.print! (any_of (fn x -> x > 150000) xs)
+    console.print! (any_of (fn x -> x < 0) xs)
+    console.print! (try! { _list_tail (rev [] []) } catch e { e })
+    console.print! (each (fn x -> x * 2) 3)
+    console.print! (each noisy! 3)
+};

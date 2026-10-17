@@ -1,0 +1,84 @@
+// Integers past 63 bits: one type with two representations.
+//
+// Every line is something a fixnum program already did, carried past the
+// boundary: a loop whose accumulator outgrows a fixnum (strict, so the JIT
+// compiles it and meets the bignum in a register), a type test in a guard,
+// a number handed to `sqrt`, a key in a map, a value through the wire. `e2e.sh`
+// runs it under both tiers, which must agree with each other and with the
+// numbers below, which are Python's.
+import std.console;
+import std.list;
+import std.map;
+import std.math;
+import std.num;
+import std.vm;
+
+let factorial : :integer -> :integer;
+let factorial n = fact_loop n 1;
+
+let fact_loop : :integer -> :integer -> :integer;
+let rec fact_loop !n !acc = if n <= 1 { acc } else { fact_loop (n - 1) (acc * n) };
+
+/// Fibonacci by pairs, so the numbers grow linearly and are added, not
+/// multiplied: the other half of what a loop does to an accumulator.
+let fib : :integer -> :integer;
+let fib n = fib_loop n 0 1;
+
+let fib_loop : :integer -> :integer -> :integer -> :integer;
+let rec fib_loop !n !a !b = if n == 0 { a } else { fib_loop (n - 1) b (a + b) };
+
+let pow : :integer -> :integer -> :integer;
+let rec pow b e =
+    if e == 0 { 1 }
+    else {
+        let half = pow b (e / 2);
+        if e % 2 == 0 { half * half } else { half * half * b }
+    };
+
+let kind : :any -> :atom;
+let kind v = match v {
+    n if type_of n == :integer && n > 4611686018427387903 => :big,
+    n if type_of n == :integer && n < -4611686018427387904 => :big_negative,
+    n if type_of n == :integer => :fixnum,
+    _ => :other,
+};
+
+let main! = {
+    let f100 = factorial 100;
+    console.print! f100
+    console.print! (fib 300)
+    console.print! (pow 3 200)
+    console.print! (f100 / factorial 98)
+
+    // The boundary, both ways: overflow into a bignum, and back.
+    let max = 4611686018427387903;
+    console.print! [max + 1, (max + 1) - 1, type_of (max + 1), -4611686018427387904 - 1, (max + 1) * 0]
+    console.print! (list.map kind [max, max + 1, 0 - max - 2, 2.5, f100])
+
+    // Division truncates toward zero; the remainder takes the dividend's sign.
+    let d = pow 10 30 + 7;
+    let m = pow 10 20;
+    console.print! [d / m, (0 - d) / m, d / (0 - m), (0 - d) / (0 - m)]
+    console.print! [d % m, (0 - d) % m, d % (0 - m), (0 - d) % (0 - m)]
+    console.print! (try! { f100 / 0 } catch e { :divide_by_zero })
+
+    // Order and equality across the representations.
+    console.print! (list.sort [f100, 3, 0 - f100, max + 1, 2.5, max])
+    console.print! [f100 == factorial 100, f100 == f100 + 1, max + 1 == 4611686018427387904,
+                    compare (max + 1) max, compare (0 - f100) 1.0e300]
+
+    // Floats: an integer meets a float as a float, rounded once.
+    console.print! [num.to_float (pow 2 70 + 1), f100 + 0.5, math.sqrt (pow 10 40), pow 2 1100 * 1.0]
+    console.print! [num.to_int 1.0e30, math.floor (0.0 - 1.0e25), math.abs (0 - f100) == f100]
+
+    // Data: map keys, text, the wire.
+    let m2 = %{ f100 => :hundred, pow 2 64 => :word };
+    console.print! [m2.[factorial 100], m2.[pow 2 64], m2.[pow 2 64 + 1 else :absent]]
+    console.print! [num.parse_int "-98765432109876543210", to_string (pow 2 64)]
+    console.print! (vm.wire_decode (vm.wire_encode [f100, 0 - pow 2 64, max + 1]))
+
+    // Literals of any size, in expressions and in patterns.
+    let lit = 340282366920938463463374607431768211456;
+    console.print! [lit == pow 2 128, 0xffffffffffffffffffff, -9223372036854775808]
+    console.print! (match pow 2 128 { 340282366920938463463374607431768211456 => :matched, _ => :missed })
+}

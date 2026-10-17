@@ -1,0 +1,67 @@
+// A collection that happens *inside* a native, while it walks a lazy list.
+//
+// `str.concat_all`, `_str_of_bytes`, `_str_of_chars` and the list `+` all run the
+// machine underneath themselves, on the C++ stack, to force the next piece of
+// what they are walking. For most of the VM's life that nested loop could not
+// collect: a native holding a raw pointer across the force would have had its
+// object promoted out from under it. The price was paid in memory rather than
+// in correctness -- one `str.concat_all` over the compiler's own image was
+// measured allocating 354 MB of nursery that no safepoint could reach, 87% of
+// it already dead.
+//
+// It collects now, and this is the program that says so. Each list below is
+// built *by the walk that consumes it*, so the nursery fills while the native
+// is on the stack and the only thing that can empty it is the safepoint inside
+// the force. `collect_under_native.env` shrinks the nursery so that a program
+// small enough to be a test still collects dozens of times inside each native.
+//
+// What it is really checking is the promise `VouchesForGc` makes: that these
+// natives keep their position on the value stack rather than in a C++ local.
+// A regression looks like a wrong answer or a crash here, and under
+// `DREAM_VERIFY_HEAP` like a heap the verifier walks and finds broken.
+import std.console;
+
+import std.list;
+import std.str;
+
+let show! label v = { console.print! (label + to_string v) };
+
+/// Lazy in the tail: `pieces n` is not built until the walk asks for it, so the
+/// allocation happens underneath whatever is doing the walking.
+let rec pieces n =
+    if n == 0 { [] }
+    else { _list_cons (str.repeat (n % 7 + 1) "ab") (pieces (n - 1)) };
+
+let rec byte_list n =
+    if n == 0 { [] } else { _list_cons (n % 251) (byte_list (n - 1)) };
+
+let rec code_list n =
+    if n == 0 { [] } else { _list_cons (97 + n % 26) (code_list (n - 1)) };
+
+let main! = {
+    // _str_concat: one string from a list that does not exist yet.
+    show! "concat_all length: " (len (str.concat_all (pieces 4000)))
+    // _str_of_bytes: the same shape, one byte at a time.
+    show! "of_bytes length:   " (len (_str_of_bytes (byte_list 4000)))
+    // _str_of_chars: Unicode scalars rather than bytes.
+    show! "of_chars length:   " (len (_str_of_chars
+                                          (list.map _char_of_code (code_list 4000))))
+    // concat_lists: the `+` operator forces a whole left spine.
+    show! "append length:     " (len (pieces 2000 + pieces 2000))
+    // Sharing has to survive a collection that happens mid-walk: both halves
+    // are the same list, and the answer is the same either way.
+    let shared = pieces 1500;
+    show! "shared halves agree: " (str.concat_all shared == str.concat_all shared)
+    // Lengths alone would not notice a cell the walk read after it moved, so
+    // the bytes are added up too: a stale read lands on a forwarded husk or on
+    // a neighbour's payload, and either one changes this number.
+    show! "concat checksum:   " (checksum (str.concat_all (pieces 4000)))
+    show! "of_bytes checksum: " (checksum (_str_of_bytes (byte_list 4000)))
+};
+
+/// The bytes of a string, added up. `str.byte` is a read of the buffer, so this
+/// walks exactly the bytes the native wrote.
+let checksum s = {
+    let rec go i acc = if i >= len s { acc } else { go (i + 1) (acc + str.byte i s) };
+    go 0 0
+};

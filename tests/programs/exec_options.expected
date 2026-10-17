@@ -1,0 +1,10 @@
+/
+
+inherited
+
+given
+
+["one\nthree\n", "two\n"]
+[0, "one\ntwo\nthree\n", ""]
+true
+:bad_argument

@@ -1,0 +1,3 @@
+main is about to raise
+dream: uncaught error: <error :error :main_gave_up>
+    in `main!` (root_failure_ends_run.dr:15:1)

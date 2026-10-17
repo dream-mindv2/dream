@@ -1,0 +1,25 @@
+// `x :: xs` -- the cell with `x` at the front of `xs`.
+//
+// It is the arena's `cons` operator written directly, the same node
+// `list.cons x xs` becomes once `opt` has rewritten the call, so the tail is
+// as lazy as it is there: `upto` below would never finish if it were not. It
+// sits below `+` and above the comparisons, and is the one operator that
+// groups to the right.
+import std.console;
+import std.list;
+
+let upto : :integer -> [:integer];
+let rec upto n = if n == 0 { [] } else { n :: upto (n - 1) };
+
+let pairs : [[:integer, :string]];
+let pairs = [1, "one"] :: [2, "two"] :: [];
+
+let main! = {
+    console.print! (to_string (1 :: 2 :: 3 :: []));
+    console.print! (to_string (10 - 1 :: [0]));
+    console.print! (to_string (1 :: [2] == [1, 2]));
+    console.print! (to_string (list.take 3 (upto 1000000)));
+    console.print! (to_string (:ok :: [:fine]));
+    console.print! (to_string pairs);
+    console.print! (to_string (list.fold (fn acc x -> x :: acc) [] [1, 2, 3]))
+};

@@ -1,0 +1,117 @@
+// Interpreter/JIT parity for primitive opcodes, builtins, and host calls.
+// Lazy defaults and carried arguments must remain unforced.
+import std.console;
+import std.math;
+
+// --- a loop whose body is one native call ----------------------------------
+//
+// `s` is the shape the whole thing is for: a parameter the loop carries and
+// reads only on the path that keeps going. Nothing forces it in the base case,
+// so the strictness rule the tier rests on cannot prove it strict -- and does
+// not have to, because every self call hands it straight back.
+let rec sum_bytes s i n acc =
+    if i >= n { acc } else { sum_bytes s (i + 1) n (acc + _str_byte s i) };
+
+// A list walked through the two natives that walk one. Both parameters are
+// forced on every path here, so this is the shape the tier always could have
+// taken and never did, for want of being allowed to make the call.
+let rec spine xs acc = if _list_is_empty xs { acc } else { spine (_list_tail xs) (acc + 1) };
+
+// --- a carried parameter is moved, not forced ------------------------------
+//
+// `x` is never looked at. Under the interpreter its argument is suspended and
+// stays that way, so the division never happens; compiled code must do the same
+// rather than evaluate it on the way into the loop.
+let rec ignoring x i n acc = if i >= n { acc } else { ignoring x (i + 1) n (acc + 1) };
+
+// Carried *and* read, but only on the path that iterates. Called with a count
+// of zero once the function is hot: the loop stops before it looks at `s`, so a
+// tier that forced its parameters on entry would raise where nothing should.
+let rec first_byte s i n acc =
+    if i >= n { acc } else { first_byte s (i + 1) n (acc + _str_byte s i) };
+
+// --- the containers --------------------------------------------------------
+//
+// Container reads force their result in the machine and leave an unused
+// default lazy, including when the default is a carried parameter.
+let rec map_sum m i n acc =
+    if i >= n { acc } else { map_sum m (i + 1) n (acc + m.[i else 0]) };
+
+let rec map_or m d i n acc =
+    if i >= n { acc } else { map_or m d (i + 1) n (acc + m.[i else d]) };
+
+let rec array_sum a i n acc =
+    if i >= n { acc } else { array_sum a (i + 1) n (acc + a.[i]) };
+
+// --- the builtins, which are natives of the other shape --------------------
+//
+// `len` and `to_string` are immediates carrying an index into a static table
+// rather than members of a module, and `to_string` is the one here that runs
+// Dream work underneath itself.
+let rec lens xs i n acc = if i >= n { acc } else { lens xs (i + 1) n (acc + len xs) };
+let rec shown v i n acc =
+    if i >= n { acc } else { shown v (i + 1) n (acc + len (to_string v)) };
+
+// --- ordering, which is a native over anything -----------------------------
+let rec ranks xs i n acc =
+    if i >= n { acc } else { ranks xs (i + 1) n (acc + compare i n) };
+
+// --- the numeric natives the tier writes out rather than calling -----------
+let rec roots i n acc =
+    if i >= n { acc } else { roots (i + 1) n (acc + math.sqrt (_to_float i)) };
+
+// --- what must be declined -------------------------------------------------
+//
+// An impure native is refused outright: a compiled body is entered and left in
+// one piece, and nothing here orders an effect against anything. The loop still
+// runs, and writes exactly one dot per iteration.
+let rec dots! i n = if i >= n { () } else { console.write! "."; dots! (i + 1) n };
+
+// A lazy argument that is not safe to evaluate refuses the function. The key is
+// there, so the interpreter never looks at the default; if the tier took this
+// call and evaluated it, the loop would raise instead of answering.
+let rec defaults m i n acc =
+    if i >= n { acc } else { defaults m (i + 1) n (acc + m.[3 else (1 / 0)]) };
+
+// A parameter nothing forces and no call carries: `i` is looked at only where
+// the list runs out, and every self call *computes* a new one, so evaluating it
+// eagerly is work the interpreter might never do. Declined, and the answer is
+// the one it always gave.
+let rec index_from i x xs =
+    if _list_is_empty xs { 0 - 1 }
+    else if xs.[0] == x { i }
+    else { index_from (i + 1) x (_list_tail xs) };
+
+// A list builder, whose accumulator is neither forced nor carried -- `cons`
+// leaves both its arguments alone. Declined, and still a list.
+let rec upto i n acc = if i > n { acc } else { upto (i + 1) n (_list_cons i acc) };
+
+let show! name v = console.print! (name + " = " + to_string (try! { strict! v } catch e { e }));
+
+let main! = {
+    let text = "the quick brown fox jumps over the lazy dog";
+    let m = ((((%{})).[3 => 70])).[7 => 900];
+    let a = _array_new 64 5;
+    let long = upto 1 20000 [];
+
+    show! "sum_bytes"  (sum_bytes text 0 (len text) 0);
+    show! "spine"      (spine long 0);
+    show! "ignoring"   (ignoring (1 / 0) 0 20000 0);
+    // Hot first, then the call that must not force what it carries.
+    show! "warm"       (first_byte text 0 (len text) 0);
+    show! "cold"       (first_byte (1 / 0) 0 0 77);
+    show! "map_sum"    (map_sum m 0 20000 0);
+    show! "map_or"     (map_or m 1 0 20000 0);
+    show! "array_sum"  (array_sum a 0 64 0);
+    // Past the end, so the native raises -- with everything before it done.
+    show! "past_end"   (array_sum a 0 200 0);
+    show! "lens"       (lens text 0 20000 0);
+    show! "shown"      (shown 12345 0 20000 0);
+    show! "ranks"      (ranks text 0 20000 0);
+    show! "roots"      (roots 1 20000 0.0);
+    show! "defaults"   (defaults m 0 20000 0);
+    show! "index_from" (index_from 0 0 long);
+    show! "upto"       (len long);
+    dots! 0 40;
+    console.print! "";
+};

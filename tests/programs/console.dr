@@ -1,0 +1,42 @@
+// Every `std.console` member takes exactly one argument. `print!`, `line!` and
+// `error!` add a newline; `write!` does not.
+//
+// They used to be variadic, printing each argument in turn. It read well, but
+// a variadic function can never be given too many arguments, so a stray value
+// at the end of a line was printed instead of being what the line evaluated
+// to -- and no arity check could ever catch it. With one argument that same
+// line raises `:not_a_function`, which is the last case below.
+//
+// Several values are joined by the caller, which is what `+` is for.
+// `to_string` is the identity on a string, so it is always safe to reach for.
+import std.console;
+
+let rec fac n = if n <= 1 { 1 } else { n * fac (n - 1) };
+
+let main! = {
+    console.print! "one"
+    console.print! ("two:   " + to_string 42)
+    console.print! ("many:  " + to_string 1 + " " + to_string 2 + " " + to_string [4, 5])
+
+    // The argument is forced, whatever its shape.
+    console.print! ("forced: " + to_string (fac 5) + " " + to_string :atom + " " + to_string 'c')
+
+    // `write!` adds no newline, so several calls compose into one line.
+    console.write! "split: "
+    console.write! ("a" + "b" + "c")
+    console.write! "\n"
+
+    // The pipe feeds its left side in as the last -- here the only -- argument.
+    fac 6 |> console.print!
+
+    console.line! ("line:  " + to_string true)
+
+    // A member used as a value is still a value; nothing is printed until it
+    // is applied.
+    let p = console.print!;
+    p ("indirect: " + to_string 7)
+
+    // One argument means a second one is an error rather than more output.
+    // `print!` returns unit, and unit is not a function.
+    console.print! (to_string (try! { p "a" "b" } catch e { e }))
+}

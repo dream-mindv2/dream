@@ -1,0 +1,40 @@
+// A concurrent mark finished underneath compiled code.
+//
+// The companion of `jit_collects.dr`, for the one collection that program
+// cannot reach. A collection under compiled code never *starts* a concurrent
+// mark -- its snapshot could not see what the compiled frames hold -- but it
+// finishes one that was already running, and that finalize pins what the
+// machine stack points at like any other collection there ("Collecting under
+// compiled code" in docs/gc.md). So a mark has to begin at an interpreted
+// safepoint and end under a compiled one.
+//
+// `grow!` is impure, so it stays interpreted, and the lists it keeps are built
+// at its own safepoints, which is where majors come due. Between them it calls
+// `work`, compiled from its first call (`jit_collects_marking.jit`), which
+// allocates enough that the collection finishing the mark usually lands inside
+// it. Usually: when a mark ends is up to the helpers, so this is coverage
+// rather than a guarantee, and `just test-heap` -- which marks concurrently on
+// every major, and verifies the heap after each -- is where it earns its keep.
+// `DREAM_GC_TRACE=1` shows a finalize under compiled code as a `concurrent
+// major` line directly after an `under compiled code` one.
+import std.console;
+import std.list;
+
+let rec mk i n = if i == n { [] } else { list.cons i (mk (i + 1) n) };
+
+let rec cnt xs !acc = match xs { [] => acc, [x, ..rest] => cnt rest (acc + x) };
+
+let work n k = cnt (mk 0 (n + k)) 0;
+
+/// Impure, so interpreted: what it builds is built at its own safepoints.
+let rec fill! j !acc = match j == 0 { true => acc, false => fill! (j - 1) (list.cons j acc) };
+
+let rec grow! i n keep !acc = match i > n {
+    true => [list.length keep, list.sum (list.map list.length keep), acc],
+    false => {
+        let kept = strict! (fill! 2000 []);
+        grow! (i + 1) n (list.cons kept keep) (acc + work 20000 i)
+    },
+};
+
+let main! = console.print! (to_string (grow! 1 300 [] 0));

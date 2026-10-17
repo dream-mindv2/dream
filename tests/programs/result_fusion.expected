@@ -1,0 +1,24 @@
+[true, true]
+8
+9
+[Result.ok(4), Result.ok(11)]
+Result.error(:bad)
+9
+8
+Result.ok(6)
+Result.ok(4)
+[8, 99]
+42
+Option.some(4)
+Option.some(4)
+8
+Result.ok(6)
+Result.ok(777)
+8
+8
+8
+6
+6
+7
+[Result.ok(11), Result.ok(40), Result.ok(11)]
+4

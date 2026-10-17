@@ -1,0 +1,20 @@
+// A compiled float loop that meets a tensor where it expected a number.
+//
+// `go` is compiled with `acc` in a register as a double: `acc + x * 2.0` has a
+// float on one side, so the JIT types the whole sum as a float. When the array
+// holds a tensor instead, `x * 2.0` is a tensor and there is no register for
+// it -- the compiled body hands the call back to the interpreter mid-loop,
+// which runs it from the frame it was entered with. The answer must be what
+// the interpreter alone would have printed.
+import std.console;
+import std.tensor;
+
+let go : :integer -> :float -> #[:any] -> :any;
+let rec go n !acc xs = if n == 0 { acc } else { go (n - 1) (acc + xs.[0] * 2.0) xs };
+
+let main! = {
+    console.print! (go 1000 0.0 #[0.5])
+    console.print! (go 3 0.0 #[tensor.of_list [1, 2, 3]])
+    console.print! (go 1000 0.0 #[0.25])
+    console.print! (go 2 1.5 #[tensor.of_list [[1, 0], [0, 1]]])
+};

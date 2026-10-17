@@ -1,0 +1,29 @@
+import std.console;
+import std.error;
+
+// A field written `!x` is forced by `make`, `new` and `set_x` before it goes
+// into the record; the other fields stay as lazy as they always were.
+group G { !x, y }
+struct S { !x, y }
+mapping M { !retries = 3, name }
+
+// A strict parameter is forced by the frame, so a function whose body is
+// one `set` is not a wrapper the call site may replace with that `set`.
+let put !value record = record.[0 => value];
+
+let kind_of! f = try! { f () } catch e { error.kind e };
+
+let main! = {
+    // A lazy field that is never read is never computed.
+    console.print! (G.x (G.make 1 (1 / 0)))
+    console.print! (S.x (S.make 1 (1 / 0)))
+    // A strict field is computed even when only its neighbour is read.
+    console.print! (kind_of! (fn () -> G.y (G.make (1 / 0) 2)))
+    console.print! (kind_of! (fn () -> S.y (S.make (1 / 0) 2)))
+    console.print! (kind_of! (fn () -> M.name (M.make (1 / 0) "a")))
+    console.print! (kind_of! (fn () -> M.name (M.new "a")))
+    console.print! (kind_of! (fn () -> S.y (S.set_x (1 / 0) (S.make 1 2))))
+    console.print! (kind_of! (fn () -> S.x (S.set_y (1 / 0) (S.make 1 2))))
+    console.print! (M.retries (M.new "a"))
+    console.print! (kind_of! (fn () -> len (put (1 / 0) #[1, 2])))
+};

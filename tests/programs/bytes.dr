@@ -1,0 +1,37 @@
+// `_str_of_bytes` -- building a string from raw byte values.
+//
+// A string is a length and a byte buffer, and `_str_byte` already reads those
+// bytes back out. This is the other direction, and it is what `_str_of_chars`
+// cannot do: that one takes Unicode scalars and UTF-8-encodes them, so a byte
+// over 0x7F comes back out as two. The difference is the point of the test.
+import std.console;
+
+import std.list;
+
+let show! label v = { console.print! (to_string label + (to_string v)) };
+
+/// A little-endian u32, the shape a binary format's header field has.
+let u32_le n = [n % 256, (n / 256) % 256, (n / 65536) % 256, (n / 16777216) % 256];
+
+let main! = {
+    let all = _str_of_bytes (list.range 0 256);
+    show! "every byte 0..255 -> " (len all)
+    show! "  as UTF-8 instead -> " (len (_str_of_chars (list.map _char_of_code (list.range 0 256))))
+
+    show! "byte 0   -> " (_str_byte all 0)
+    show! "byte 128 -> " (_str_byte all 128)
+    show! "byte 255 -> " (_str_byte all 255)
+
+    // A NUL byte is a byte like any other: it does not end the string.
+    show! "embedded NUL -> " (len (_str_of_bytes [65, 0, 66]))
+
+    // Round trip: every byte read back is the one that was written.
+    let same = list.all (fn i -> _str_byte all i == i) (list.range 0 256);
+    show! "round trip -> " same
+
+    show! "little-endian 0x12345678 -> " (u32_le 305419896)
+    show! "empty -> " (len (_str_of_bytes []))
+
+    show! "not a byte -> " (try! { _str_of_bytes [256] } catch e { e })
+    show! "not an integer -> " (try! { _str_of_bytes ['c'] } catch e { e })
+}

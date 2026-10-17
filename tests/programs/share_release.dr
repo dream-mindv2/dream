@@ -1,0 +1,127 @@
+// `vm.release!`: what was shared is freed once a census finds nobody holding
+// it -- and only then. See "Freeing what was shared" in docs/gc.md.
+//
+// The last case is the one the design's barrier is for: pairs of processes
+// passing a released table back and forth, checking it on every hop, while the
+// main process starts census after census. A round that freed the table while
+// a message or a heap still held it would crash here or sum wrong, and under
+// `test-heap`'s verifier and `test-races`' sanitizer it would say so.
+import std.console;
+import std.list;
+import std.proc;
+import std.vm;
+
+/// Wait up to ten seconds for the shared area to come back to `target`, and
+/// say whether it did. A census finishes when every process has reported, so
+/// this sleeps -- which is a slice ending -- between looks.
+///
+/// It asks for another census every tenth look: a round that overlapped a
+/// copy of the table was spoiled, and nothing else will start one -- which a
+/// build ten times slower, under the sanitizer, finds every time.
+let rec back_to! !target !tries = {
+    proc.sleep! 10
+    if tries % 10 == 0 { vm.collect_shared! () }
+    if vm.shared_bytes! () == target { true }
+    else if tries == 0 { false }
+    else { back_to! target (tries - 1) }
+};
+let freed_to! target = back_to! target 1000;
+
+/// The size after a census has had time to run: for checking what is kept.
+let bytes! u = { proc.sleep! 100; vm.shared_bytes! () };
+
+let table n = list.map (fn i -> [i, $"entry {i}"]) (list.range 0 n);
+
+/// Share a table, release it, and keep nothing.
+let share_and_release! n = { let t = vm.share! (table n); vm.release! t };
+
+/// Share a table, hand it to `p`, release it, and keep nothing.
+let share_to! p n = { let t = vm.share! (table n); send! p t; vm.release! t };
+
+/// An inner table, an outer one holding it; release the inner one only.
+/// Answers the outer one, which the caller then releases.
+let nested! u = {
+    let inner = vm.share! (table 1000);
+    let outer = vm.share! [inner, table 10];
+    let both = vm.shared_bytes! ();
+    vm.release! inner
+    let kept = bytes! ();
+    vm.release! outer
+    kept == both
+};
+
+let expected_sum = list.sum (list.range 0 300);
+
+/// What a table of `table 300` adds up to, read through every entry.
+let total t = list.sum (list.map (fn e -> list.nth 0 e) t);
+
+/// The counting side of a pair: take the table, check it, hand it back,
+/// `hops` times, then tell the other side to stop. Answers what the table
+/// summed to on the last hop.
+let rec bounce! !hops other = {
+    let t = receive! { [:table, t] => t };
+    let s = strict! (total t);
+    if hops == 0 { send! other :stop; s }
+    else { send! other [:table, t]; bounce! (hops - 1) other }
+};
+
+/// The other side: hand the table straight back, checking it, until told to
+/// stop.
+let rec echo! other = receive! {
+    [:table, t] => { strict! (total t); send! other [:table, t]; echo! other },
+    :stop => :stopped,
+};
+
+/// Two processes and a released table between them. Answers the side that
+/// will report the sum.
+let start_pair! i = {
+    let a = spawn! $( bounce! 40 (receive! { [:peer, p] => p }) );
+    let b = spawn! $( echo! (receive! { [:peer, p] => p }) );
+    send! a [:peer, b]
+    send! b [:peer, a]
+    share_table_to! a 300
+    a
+};
+
+/// Share a table, send it as `[:table, t]`, release it, and keep nothing.
+let share_table_to! p n = { let t = vm.share! (table n); send! p [:table, t]; vm.release! t };
+
+let main! = {
+    let base = vm.shared_bytes! ();
+
+    // 1. Released and held by nobody: freed.
+    share_and_release! 2000
+    console.print! ["freed", freed_to! base]
+
+    // 2. Held by a parked process: kept; freed once it ends.
+    let holder = spawn! $( { let t = recv! (); let go = receive! { :go => :go }; list.length t } );
+    share_to! holder 2000
+    let held = bytes! ();
+    send! holder :go
+    let n = join! holder;
+    vm.collect_shared! ()
+    console.print! ["held", held > base, n, freed_to! base]
+
+    // 3. A table inside another: the outer one keeps the inner one.
+    let kept = nested! ();
+    console.print! ["dependency", kept, freed_to! base]
+
+    // 4. In a mailbox: kept until it is taken and dropped.
+    let sleeper = spawn! $( { let go = receive! { :go => :go }; list.length (recv! ()) } );
+    share_to! sleeper 500
+    let mailed = bytes! ();
+    send! sleeper :go
+    join! sleeper
+    vm.collect_shared! ()
+    console.print! ["mailbox", mailed > base, freed_to! base]
+
+    // 5. Not shared at all.
+    console.print! (vm.release! [1, 2])
+
+    // 6. Passed around while censuses run.
+    let pairs = strict! (list.map (fn i -> start_pair! i) (list.range 0 4));
+    let rec churn! !k = if k == 0 { () } else { vm.collect_shared! (); proc.sleep! 2; churn! (k - 1) };
+    churn! 100
+    let sums = strict! (list.map (fn p -> join! p) pairs);
+    console.print! ["passed around", list.all (fn x -> x == expected_sum) sums, freed_to! base]
+};

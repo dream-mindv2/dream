@@ -1,0 +1,7 @@
+the disc of radius 2 has area 12
+a list [1, "x", :y] and a map %{:a => 1}
+nested <2>, a brace { and a lone }
+no pieces at all
+22
+<error :divide_by_zero division by zero>
+203343

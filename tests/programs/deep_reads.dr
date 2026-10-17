@@ -1,0 +1,42 @@
+// A value read out of a structure, over and over.
+//
+// The first four build a chain in which every read is a suspended read of the
+// one before it: a tail that is the tail of the list before it, a pattern's rest
+// that is the rest of the list before it, a head and an element that are each one
+// more than the one before. Nothing is forced until the end, and then the whole
+// chain is read at once.
+//
+// The point is where that read happens. A native that hands back a value it
+// found used to force it underneath itself, in a nested machine loop on the C++
+// stack, so each of those four was a segmentation fault. The machine forces it
+// instead, and its depth is heap.
+//
+// The map is different, and here for a different reason. A map pattern reads its
+// key while the pattern is being tested, so every level's field is read before the
+// next is built and there is no chain to walk. It checks that a field still comes
+// out right now that `_match_key` hands its value back unforced.
+import std.console;
+
+let rec shift_tail xs n = if n <= 0 { xs } else { shift_tail (_list_cons 0 (_list_tail xs)) (n - 1) };
+
+let rec shift_rest xs n =
+    if n <= 0 { xs } else { shift_rest (match xs { [_, ..rest] => _list_cons 0 rest, _ => xs }) (n - 1) };
+
+let rec bump_head xs n =
+    if n <= 0 { xs } else { bump_head (match xs { [h, ..rest] => _list_cons (h + 1) rest, _ => xs }) (n - 1) };
+
+let rec bump_at a n =
+    if n <= 0 { a } else { bump_at (match a { #[x, y] => #[x + 1, y], _ => a }) (n - 1) };
+
+let rec bump_key m n =
+    if n <= 0 { m } else { bump_key (match m { %{ :count => c } => %{ :count => c + 1 }, _ => m }) (n - 1) };
+
+let depth = 300000;
+
+let main! = {
+    console.print! ("tail:  " + to_string (len (shift_tail [1, 2] depth)))
+    console.print! ("rest:  " + to_string (len (shift_rest [1, 2] depth)))
+    console.print! ("head:  " + to_string (((bump_head [0] depth)).[0]))
+    console.print! ("array: " + to_string (bump_at #[0, 0] depth).[0])
+    console.print! ("map:   " + to_string (bump_key %{ :count => 0 } depth).[:count])
+};

@@ -1,0 +1,9 @@
+== against a literal      -> true
+== the other way round    -> true
+!= when they differ       -> true
+two pending lists         -> true
+nested one level down     -> true
+list + forces its left    -> [2, 4, 9]
+list + forces both sides  -> [2, 4]
+different lengths         -> false
+and inside a process too  -> true

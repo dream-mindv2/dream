@@ -1,0 +1,55 @@
+// Collections underneath compiled code.
+//
+// A compiled frame keeps its values in machine registers and stack slots, and
+// until 2026-10-04 that meant nothing could collect beneath one: every helper
+// it called pinned the heap. A compiled loop that called something which
+// built and dropped a long list -- `go` calling `work` below -- held every
+// cell of it until the call returned, because the nursery could not be
+// emptied while `go` was on the stack. The same program interpreted ran in a
+// few hundred kilobytes.
+//
+// Now a collection under compiled code scans the machine stack and pins in
+// place whatever it points at ("Collecting under compiled code" in
+// docs/gc.md). This program checks both halves of that:
+//
+// - that collections happen *inside* one compiled call. `go 1 1 0` is a
+//   single iteration that calls `work` once, so the only safepoints in it are
+//   underneath the compiled `go`; the count of collections across it is the
+//   question. `jit_collects.jit` compiles everything from its first call,
+//   and `.env` shrinks the nursery so that a test-sized list collects many
+//   times.
+// - that what compiled code holds across those collections is still what it
+//   was: `keep` carries a list, a float, a map and a string through calls that
+//   collect, and reads every one of them afterwards. A pinned object that
+//   moved, or a field of one left pointing at the old copy, is a wrong answer
+//   here or a heap the verifier rejects under `just test-heap`.
+import std.console;
+import std.list;
+import std.vm;
+
+let rec mk i n = if i == n { [] } else { list.cons i (mk (i + 1) n) };
+
+let rec cnt xs !acc = match xs { [] => acc, [x, ..rest] => cnt rest (acc + x) };
+
+/// Builds a list of `n + k` cells as it is consumed, and drops it.
+let work n k = cnt (mk 0 (n + k)) 0;
+
+let rec go i n !acc = if i > n { acc } else { go (i + 1) n (acc + work 200000 i) };
+
+/// Every argument but `acc` is held, unchanged, across each call of `work`.
+let rec keep i n xs f m s !acc =
+    if i > n {
+        [acc, cnt xs 0, f * 2.0, m.[:k], s + "!"]
+    } else {
+        keep (i + 1) n xs f m s (acc + work 20000 i)
+    };
+
+let main! = {
+    let before = vm.stats! ();
+    let once = strict! (go 1 1 0);
+    let after = vm.stats! ();
+    console.print! ("one call:    " + to_string once);
+    console.print! ("collected:   " + to_string (after.[:collections] - before.[:collections] > 5));
+    let held = keep 1 8 (mk 0 100) 0.25 %{:k => "kept"} "still here" 0;
+    console.print! ("held across: " + to_string held)
+};

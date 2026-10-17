@@ -1,0 +1,10 @@
+// The C library the test binds, made by the package that uses it: `cc` builds
+// it for the target with the machine's compiler and `payload` carries it in
+// the image, where `ffi.dr` finds it as `from embedded "sample"`.
+import std.build;
+import std.build.cc;
+import std.build.cc.steps;
+
+let plan : :map -> :map;
+let plan ctx = steps.with_toolchain ctx (fn tc ->
+    build.empty |> build.payload "sample" (steps.artifact tc (cc.shared "sample" ["sample.c"] |> cc.optimize 2)));

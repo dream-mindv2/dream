@@ -1,0 +1,49 @@
+// An effect inside a computation that also parks must happen exactly once.
+//
+// `strict!` forces deeply, and forcing runs a nested machine loop. When a
+// blocking native turns up inside that loop -- `join!` on a process still
+// running, `exec!` waiting for a child -- the loop cannot park, because it is
+// running underneath a native whose C++ frame has to return first.
+//
+// It used to unwind: drop what the force had done, un-blackhole its thunks,
+// and let the outer native force again from scratch when the process woke.
+// That is only sound while forcing is pure. It is not -- and re-forcing
+// performed every effect a second time. The force is now suspended instead,
+// and the outer native's retry is spliced in underneath it, so the suspended
+// work finishes first and the retry finds a value already forced.
+//
+// Two symptoms, both here. The first is an effect running twice. The second
+// is `exec!`, which records its pending child in one slot on the process: a
+// re-force made the *first* call take the result the *second* had started and
+// begin another, and that never terminated at all.
+import std.console;
+import std.list;
+import std.os;
+
+// Long enough that `join!` really has to park rather than find it finished.
+let rec burn n acc = if n <= 0 { acc } else { burn (n - 1) (acc + n % 7) };
+
+let rec twice! n = if n <= 0 { :done } else { os.exec! "true" []; twice! (n - 1) };
+
+let main! = {
+    // One effect, written once, inside something that parks.
+    let slow = spawn! $( strict! (burn 2000000 1) );
+    let counted = strict! {
+        console.print! "effect"
+        join! slow
+    };
+    console.print! ("joined: " + to_string (counted > 0))
+
+    // Several effects in a row, each parking, all inside one `strict!`.
+    let several = spawn! $( strict! (burn 2000000 2) );
+    let both = strict! {
+        console.print! "first"
+        console.print! "second"
+        join! several
+    };
+    console.print! ("joined again: " + to_string (both > 0))
+
+    // `exec!` twice under `strict!`: the case that never terminated.
+    console.print! ("two children: " + to_string (strict! (twice! 2)))
+    console.print! ("in a process: " + to_string (join! (spawn! $( strict! (twice! 2) ))))
+}

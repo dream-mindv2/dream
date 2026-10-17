@@ -1,0 +1,47 @@
+// Reading and changing a container: `c.[k]`, `c.[k else d]` and `c.[k => v]`.
+//
+// One pair of operations over maps, arrays and lists. A map is read by key, an
+// array or a list by position, and a change answers a new container and leaves
+// the one it was given alone. What is read is forced by the machine rather than
+// underneath a native call, which the last line here depends on.
+import std.console;
+import std.list;
+
+let boom n = 1 / 0;
+let rec from n = list.cons n (from (n + 1));
+
+// A field updated many times and read once. Every update is a suspended read of
+// the one before, so the first read walks the whole chain.
+let rec bump m n = if n <= 0 { m } else { bump m.[:count => m.[:count else 0] + 1] (n - 1) };
+
+let main! = {
+    let m = %{ :name => "widget", :size => 3 };
+    console.print! ("map:        " + m.[:name] + " " + to_string m.[:size])
+    console.print! ("fallback:   " + to_string m.[:colour else :none])
+    let m2 = m.[:size => 4].[:colour => :blue];
+    console.print! ("changed:    " + to_string [m2.[:size], m.[:size], len m2, len m])
+
+    let a = #[10, 20, 30];
+    console.print! ("array:      " + to_string [a.[0], a.[2], a.[5 else -1]])
+    let a2 = a.[1 => 99];
+    console.print! ("array set:  " + to_string [a2.[1], a.[1]])
+
+    let xs = [1, 2, 3];
+    console.print! ("list:       " + to_string [xs.[0], xs.[2], xs.[3 else 0]])
+    console.print! ("list set:   " + to_string [xs.[1 => 20], xs])
+    let grid = [#[1, 2], #[3, 4]];
+    console.print! ("nested:     " + to_string grid.[1].[0])
+
+    // Nothing is forced that the operation does not need.
+    console.print! ("lazy:       " + to_string [boom 0, 7].[1])
+    console.print! ("lazy set:   " + to_string [boom 0, 7].[0 => 5].[0])
+    console.print! ("unused:     " + m.[:name else boom 1])
+    console.print! ("infinite:   " + to_string [(from 1).[100], (from 1).[2 => 0].[2]])
+
+    console.print! ("missing:    " + to_string (try! { m.[:colour] } catch e { e }))
+    console.print! ("outside:    " + to_string (try! { a.[3] } catch e { e }))
+    console.print! ("past end:   " + to_string (try! { xs.[3 => 0] } catch e { e }))
+    console.print! ("not one:    " + to_string (try! { "text".[0] } catch e { e }))
+
+    console.print! ("deep chain: " + to_string (bump %{ } 300000).[:count])
+};

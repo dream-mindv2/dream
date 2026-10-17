@@ -1,0 +1,31 @@
+// The library: an ordinary program with no `main!`, compiled to an image of
+// its own. Nothing in it knows it will be called from another image.
+
+import std.console;
+import std.error;
+import std.list;
+
+let area : [:atom, :float] -> :float;
+let area shape = match shape {
+    [:square, side] => side * side,
+    [:circle, r] => 3.0 * r * r,
+};
+
+let total : [[:atom, :float]] -> %{ :sum => :float, :count => :integer };
+let total shapes = %{ :sum => list.fold (fn acc s -> acc + area s) 0.0 shapes, :count => list.length shapes };
+
+let log! : :string -> :unit;
+let log! line = console.print! ("  (shapes says: " + line + ")");
+
+let refuse! : :string -> :unit;
+let refuse! why = raise! (error.new :refused why);
+
+let apply : :any -> :any;
+let apply f = f 1;
+
+let version = "shapes 1";
+
+mod units {
+    let cm : :float -> :float;
+    let cm inches = inches * 2.5;
+}

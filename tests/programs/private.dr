@@ -1,0 +1,9 @@
+import std.console;
+
+mod hidden {
+    priv let [offset, factor] = [1, 2];
+    priv let rec sum n = if n == 0 { offset } else { n + sum (n - 1) };
+    let value n = factor * sum n;
+}
+
+let main! = console.print! (hidden.value 3);

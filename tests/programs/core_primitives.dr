@@ -1,0 +1,24 @@
+// Runtime primitives need no core module. Direct and first-class calls agree.
+import std.console;
+
+let through f x = f x;
+let rec tail_chain xs n = if n == 0 { xs } else { tail_chain (_list_tail (_list_cons (1 / 0) xs)) (n - 1) };
+let rec bytes s i n total = if i == n { total } else { bytes s (i + 1) n (total + _str_byte s 0) };
+
+let main! = {
+    console.print! [_list_is_empty [], _list_is_empty 7, (_list_cons 4 (1 / 0)).[0]]
+    console.print! (_list_tail (_list_cons (1 / 0) [9]))
+    console.print! (through _list_tail [1, 2, 3])
+    let put_front = _list_cons 7;
+    console.print! (put_front [8])
+    let later = _str_byte "abc";
+    console.print! [later 1, through _char_code 'z', _str_byte "abc" 9]
+    console.print! [_error_kind (_error_new :bad (1 / 0)), _error_payload (_error_new :ok 8)]
+    let a = _array_new 2 (1 / 0);
+    console.print! [len a, a.[0 => 5].[0], (%{}).[:x else 6]]
+    console.print! (tail_chain [42] 100000)
+    console.print! (bytes "A" 0 1000 0)
+    console.print! { let _str_byte s i = 99; _str_byte "x" 0 }
+    console.print! (try! { _list_tail [] } catch e { _error_kind e })
+    console.print! [_str_of_chars ['a', 'b'], _str_of_bytes [65, 66], _str_concat ["a", "b"], _array_of_list [1, 2]]
+};

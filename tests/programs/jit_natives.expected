@@ -1,0 +1,17 @@
+sum_bytes = 4089
+spine = 20000
+ignoring = 20000
+warm = 4089
+cold = 77
+map_sum = 970
+map_or = 20968
+array_sum = 320
+past_end = <error :out_of_bounds index 64 is outside an array of 64>
+lens = 860000
+shown = 100000
+ranks = -20000
+roots = 1885547.164894411
+defaults = 1400000
+index_from = -1
+upto = 20000
+........................................

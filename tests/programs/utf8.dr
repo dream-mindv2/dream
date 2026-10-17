@@ -1,0 +1,54 @@
+// `_str_chars` -- decoding UTF-8, and refusing what only looks like it.
+//
+// A char is one Unicode scalar value. Bytes with the right shape are not
+// always one: an overlong form spells an ASCII character in more bytes than it
+// needs, and a surrogate or a codepoint past U+10FFFF has a UTF-8 shape but is
+// not a character at all. Each of those must come out as U+FFFD (65533), one
+// per byte consumed, rather than as the value its bits would add up to.
+import std.console;
+
+import std.list;
+
+let show! label v = { console.print! (to_string label + (to_string v)) };
+
+let codes bytes = list.map _char_code (_str_chars (_str_of_bytes bytes));
+
+let main! = {
+    // Every length, and the edges either side of the ranges that are refused.
+    show! "ascii          41 42       -> " (codes [65, 66])
+    show! "two bytes      C3 A9       -> " (codes [195, 169])
+    show! "three bytes    E2 82 AC    -> " (codes [226, 130, 172])
+    show! "four bytes     F0 9F 98 80 -> " (codes [240, 159, 152, 128])
+    show! "shortest three E0 A0 80    -> " (codes [224, 160, 128])
+    show! "shortest four  F0 90 80 80 -> " (codes [240, 144, 128, 128])
+    show! "before surr.   ED 9F BF    -> " (codes [237, 159, 191])
+    show! "after surr.    EE 80 80    -> " (codes [238, 128, 128])
+    show! "last scalar    F4 8F BF BF -> " (codes [244, 143, 191, 191])
+
+    // Overlong: the character is ASCII, and must not come out as one.
+    show! "overlong /     C0 AF       -> " (codes [192, 175])
+    show! "overlong NUL   E0 80 80    -> " (codes [224, 128, 128])
+    show! "overlong four  F0 80 80 AF -> " (codes [240, 128, 128, 175])
+
+    // Not characters.
+    show! "surrogate      ED A0 80    -> " (codes [237, 160, 128])
+    show! "past 10FFFF    F4 90 80 80 -> " (codes [244, 144, 128, 128])
+    show! "lead F5        F5 80 80 80 -> " (codes [245, 128, 128, 128])
+
+    // Broken sequences.
+    show! "truncated      E2 82       -> " (codes [226, 130])
+    show! "stray cont.    80 41       -> " (codes [128, 65])
+    show! "lead then A    C3 41       -> " (codes [195, 65])
+
+    // `_char_of_code` holds the same line from the other side.
+    show! "char_of_code D7FF   -> " (_char_code (_char_of_code 55295))
+    show! "char_of_code E000   -> " (_char_code (_char_of_code 57344))
+    show! "char_of_code D800   -> " (try! { _char_of_code 55296 } catch e { e })
+    show! "char_of_code DFFF   -> " (try! { _char_of_code 57343 } catch e { e })
+    show! "char_of_code 110000 -> " (try! { _char_of_code 1114112 } catch e { e })
+
+    // What `_str_of_chars` writes, `_str_chars` reads back.
+    let edges = [0, 127, 128, 2047, 2048, 55295, 57344, 65533, 65535, 65536, 1114111];
+    let back = list.map _char_code (_str_chars (_str_of_chars (list.map _char_of_code edges)));
+    show! "round trip -> " (back == edges)
+}

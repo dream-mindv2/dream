@@ -847,7 +847,7 @@ public:
             return a;
         }
         if (!bindings_substitutable()) {
-            why(img_.node(f_.body), "a binding that cannot be written where it is read");
+            why(img_.node(f_.body), ("a binding that cannot be written where it is read: " + refused_bind_).c_str());
             return a;
         }
 
@@ -1318,14 +1318,26 @@ private:
     /// of instructions, where a duplicated call could be a duplicated
     /// recursion, and nested duplication is how a linear body becomes an
     /// exponential one.
+    /// Which binding `bindings_substitutable` refused, for `DREAM_JIT_WHY`.
+    std::string refused_bind_;
+
     bool bindings_substitutable() {
         for (uint32_t slot = f_.arity; slot < f_.slots; ++slot) {
-            if (binds_[slot] == NO_NODE || reads_[slot] <= 1) continue;
+            // A strict binding is computed by its own statement, before any
+            // read of it can run, and every read after is a load of what it
+            // remembered (`Emitter::settled_`) -- no code is written twice,
+            // so nothing here bounds it. Most are a `match` on a call.
+            if (binds_[slot] == NO_NODE || reads_[slot] <= 1 || strict_binds_[slot]) continue;
             bool calls = false;
             const uint32_t cost = expand_cost(binds_[slot], 0, &calls);
             // A binding that calls anything is remembered once computed, so
             // reading it twice costs code, not work: the bound is on the code.
-            if (cost > (calls ? kMaxMemoCode : kMaxBindDuplication)) return false;
+            if (cost > (calls ? kMaxMemoCode : kMaxBindDuplication)) {
+                refused_bind_ = "slot " + std::to_string(slot) + ", read " + std::to_string(reads_[slot]) +
+                                " times, " + std::to_string(cost) + " nodes of " +
+                                op_name(Op(img_.node(binds_[slot]).op)) + (calls ? " that calls" : "");
+                return false;
+            }
         }
         return true;
     }
@@ -1348,7 +1360,10 @@ private:
         const Node& n = img_.node(idx);
         switch (Op(n.op)) {
             case Op::Local:
-                if (n.a >= f_.arity && binds_[n.a] != NO_NODE) {
+                // A strict binding is a load wherever it is read (its statement
+                // ran first: `Emitter::settled_`), so a name for one -- what a
+                // pattern binds a `match`'s subject to -- costs what a load does.
+                if (n.a >= f_.arity && binds_[n.a] != NO_NODE && !strict_binds_[n.a]) {
                     return expand_cost(binds_[n.a], depth + 1, calls);
                 }
                 return 1;
@@ -2295,6 +2310,11 @@ private:
     bool is_memo(uint32_t slot) const {
         return slot < bind_memo_.size() && bind_memo_[slot] && slot < memo_.size() && memo_[slot];
     }
+    /// The slots of strict bindings whose statement has been written in the
+    /// block being written: a read of one after it is a load of its memo,
+    /// since the statement ran first on every path that reaches the read.
+    /// Cleared when the block ends, as a sibling scope may reuse the slot.
+    std::vector<uint8_t> settled_;
     /// Make the per-iteration state -- the snapshot and the remembered
     /// bindings -- and clear it, at the top of the body.
     void make_iteration_state();
@@ -3993,6 +4013,12 @@ Emitter::JV Emitter::node(uint32_t idx, bool tail) {
             // its name is read, which is here. See `Analyzer::check_bind`.
             if (tail && accumulate_ && let_steps_.count(idx)) return let_step(n);
             if (n.a < binds_.size() && binds_[n.a] != NO_NODE) {
+                if (is_memo(n.a) && n.a < settled_.size() && settled_[n.a]) {
+                    // The snapshot still needs the slot, for whatever is
+                    // suspended against it.
+                    mark_slot(n.a);
+                    return tag(b_.CreateLoad(i64_, memo_[n.a]));
+                }
                 return is_memo(n.a) ? bound_value(n.a) : node(binds_[n.a]);
             }
             // A parameter that *is* the answer is handed back as it stands,
@@ -4121,6 +4147,14 @@ Emitter::JV Emitter::type_test(const Node& n) {
 
 Emitter::JV Emitter::block(const Node& n, bool tail) {
     JV last = tag(i64(UNIT));
+    if (settled_.size() < f_.slots) settled_.resize(f_.slots, 0);
+    // The strict bindings this block settles, unsettled again however it ends.
+    std::vector<uint32_t> settled_here;
+    struct Unsettle {
+        std::vector<uint8_t>& s;
+        std::vector<uint32_t>& slots;
+        ~Unsettle() { for (uint32_t slot : slots) s[slot] = 0; }
+    } unsettle{settled_, settled_here};
     for (uint32_t i = 0; i < n.b; ++i) {
         uint32_t stmt = img_.kid(n.a + i);
         bool is_last = (i + 1 == n.b);
@@ -4133,6 +4167,10 @@ Emitter::JV Emitter::block(const Node& n, bool tail) {
             if (binding.flags & F_STRICT) {
                 JV v = is_memo(binding.a) ? bound_value(binding.a) : node(binding.b);
                 if (!v.v) return none();
+                if (is_memo(binding.a) && binding.a < settled_.size()) {
+                    settled_[binding.a] = 1;
+                    settled_here.push_back(binding.a);
+                }
             }
             continue;
         }

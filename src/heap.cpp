@@ -564,11 +564,28 @@ Value Heap::make_closure(uint32_t func, uint32_t ncaps) {
     return from_obj(o);
 }
 
+// `DREAM_PROBE_FRAMES`: how many frames a run makes, and how many of them a
+// suspension is ever made against. A frame no suspension holds is done with
+// when its call returns, so it could be freed then rather than collected: the
+// count is the most that freeing frames on return could save, measured before
+// anyone builds the analysis that would prove which frames those are. A
+// frame's unused `pad` marks it held, so each is counted once.
+extern const bool g_probe_frames = std::getenv("DREAM_PROBE_FRAMES") != nullptr;
+std::atomic<uint64_t> g_frames_made{0}, g_frame_bytes{0}, g_frames_held{0}, g_held_bytes{0};
+
 Value Heap::make_thunk(uint32_t node, Value frame) {
     auto* o = static_cast<ThunkObj*>(alloc_bare(ObjType::Thunk, 8 + sizeof(Value)));
     o->node = node;
     o->pad = 0;
     o->frame = frame;
+    if (g_probe_frames && is_obj(frame, ObjType::Frame)) {
+        auto* fo = static_cast<FrameObj*>(as_obj(frame));
+        if (fo->pad == 0) {
+            fo->pad = 1;
+            g_frames_held.fetch_add(1, std::memory_order_relaxed);
+            g_held_bytes.fetch_add(fo->bytes, std::memory_order_relaxed);
+        }
+    }
     return from_obj(o);
 }
 
@@ -582,6 +599,10 @@ Value Heap::make_frame_filling(Value closure, uint32_t nslots, uint32_t filled) 
     o->closure = closure;
     o->nslots = nslots;
     o->pad = 0;
+    if (g_probe_frames) {
+        g_frames_made.fetch_add(1, std::memory_order_relaxed);
+        g_frame_bytes.fetch_add(o->bytes, std::memory_order_relaxed);
+    }
     // The slots the caller is about to write need no clearing; the rest must
     // read as `NIL_SLOT`, and so must the padding to the size class, which the
     // collector walks as part of the object.

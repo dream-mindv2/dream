@@ -212,7 +212,7 @@ private:
 bool debug_variable(const std::string& name) {
     static const char* const names[] = {
         "DREAM_JIT_SYNC", "DREAM_JIT_WHY", "DREAM_JIT_TRACE", "DREAM_JIT_DENY",
-        "DREAM_JIT_AHEAD", "DREAM_JIT_CHECK_EFFECTS", "DREAM_PROBE_THUNK",
+        "DREAM_JIT_AHEAD", "DREAM_JIT_CHECK_EFFECTS", "DREAM_PROBE_THUNK", "DREAM_PROBE_FRAMES",
         "DREAM_VERIFY_HEAP", "DREAM_GC_TRACE", "DREAM_IO_TRACE", "DREAM_STUCK_SECONDS",
     };
     for (const char* n : names) if (name == n) return true;

@@ -2967,7 +2967,19 @@ std::mutex g_thunk_sites_mutex;
 std::unordered_map<uint64_t, uint64_t> g_thunk_sites;
 const Image* g_thunk_sites_image = nullptr;
 
+extern const bool g_probe_frames;
+extern std::atomic<uint64_t> g_frames_made, g_frame_bytes, g_frames_held, g_held_bytes;
+
 void dbg_dump_thunks() {
+    if (g_probe_frames) {
+        const uint64_t made = g_frames_made.load(), bytes = g_frame_bytes.load();
+        const uint64_t held = g_frames_held.load(), held_bytes = g_held_bytes.load();
+        std::fprintf(stderr, "; frames: %llu made, %llu bytes; %llu held by a suspension (%llu bytes); "
+                             "%llu never held (%llu bytes, %.1f%% of frame bytes)\n",
+                     (unsigned long long)made, (unsigned long long)bytes, (unsigned long long)held,
+                     (unsigned long long)held_bytes, (unsigned long long)(made - held),
+                     (unsigned long long)(bytes - held_bytes), bytes ? 100.0 * double(bytes - held_bytes) / double(bytes) : 0.0);
+    }
     if (!g_probe_thunk) return;
     for (size_t i = 0; i < 64; ++i) {
         uint64_t c = g_thunk_counts[i].load();

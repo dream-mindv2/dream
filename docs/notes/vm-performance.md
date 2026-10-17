@@ -1793,3 +1793,36 @@ The reproducible comparison, including all seven kernels and optional CPU
 affinity, is `dream/tests/jit_selection_bench.py`. It accepts `--policies`,
 `--runs`, `--cpu`, and `--output` for a JSON record. Each policy is selected
 through the CLI, so the benchmark exercises the same override users do.
+
+## Frames freed on return: the most it could save
+
+Measured on 2026-10-17 before building anything, with `DREAM_PROBE_FRAMES=1
+dream --stats`: how many frames a run makes, and how many a suspension is ever
+made against. A frame no suspension holds is done with when its call returns,
+so the rest are the most that freeing frames on return -- proving it in the
+compiler and emitting a free -- could take from the collector.
+
+| | frames, of all allocation | never held by a suspension | of all allocation |
+|---|---|---|---|
+| self-compile | 50% | 37.7% of frame bytes | about 19% |
+| compiled JSON grammar | 39% | 27.7% | about 11% |
+
+And what that is worth in time is smaller than in bytes, because a dead
+object in the nursery costs its allocation and nothing else -- it is never
+copied. A self-compile spends 1.4 s of 27 s of CPU in minor collections, so
+the ceiling is a fifth of that, about 1%. Not built. What holds frames is
+suspensions, which is where the cost of laziness is, and freeing the frames
+nobody held does not touch it.
+
+## Strict bindings are loads
+
+A strict binding -- every `match` on a call's result binds its subject so --
+was compiled like a lazy one: its code written at each read behind a test of
+whether it had been computed, and counted against `kMaxBindDuplication` and
+`kMaxMemoCode` as though it might run at any of them. But its statement runs
+before any read can (a binding is in scope only after it), so a read after it
+in the same block is a load of what it remembered (`Emitter::settled_`), and
+the analysis no longer counts it, nor a name for it (what a pattern binds a
+subject to). Worth about 5% on a compiled JSON grammar's large document and
+nothing measurable on a self-compile; it mattered most to inlined code, which
+is made of such bindings. `DREAM_JIT_WHY` now names the binding it refuses.

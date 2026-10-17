@@ -10,6 +10,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
+#include <unordered_map>
+#include <mutex>
 
 #include "builtins.hpp"
 #include "jit.hpp"
@@ -994,6 +997,20 @@ void advance_block(Process& p, uint32_t kids_off, uint32_t count, uint32_t index
         if (Op(sn.op) == Op::Bind) {
             auto* fo = static_cast<FrameObj*>(as_obj(frame));
             const Node& vn = img.node(sn.b);
+            // A strict bind -- a `match`'s subject, an effect's result -- is
+            // evaluated where it stands and its value put in the slot
+            // (`ContKind::BindThen`). It was suspended and the suspension
+            // entered at once: a thunk made, blackholed and overwritten for
+            // every `match` on a call, which is most of them, and in a parser
+            // that matches a reply at every step, a large share of all it
+            // allocated. A closure or a suspension still takes the path below,
+            // because `let rec go = ..` must find its own slot filled while it
+            // is being built.
+            if ((sn.flags & F_STRICT) && Op(vn.op) != Op::MakeClosure && Op(vn.op) != Op::MakeThunk) {
+                push_cont(p, ContKind::BindThen, kids_off, count, index, frame);
+                eval_node(p, sn.b, frame);
+                return;
+            }
             Value bound;
             if (Op(vn.op) == Op::MakeClosure || Op(vn.op) == Op::MakeThunk) {
                 // A local binding may refer to itself -- `let rec go x = .. go ..`
@@ -2644,6 +2661,16 @@ void step_return(Process& p, size_t floor) {
             advance_block(p, c.a, c.b, c.c, c.v1);
             return;
 
+        case ContKind::BindThen: {
+            const Image& img = img_of(p);
+            const Node& sn = img.node(img.kid(c.a + c.c));
+            auto* fo = static_cast<FrameObj*>(as_obj(c.v1));
+            value_slot_store(&fo->slots()[sn.a], p.result);
+            p.heap().remember_if_old(fo, p.result);
+            advance_block(p, c.a, c.b, c.c + 1, c.v1);
+            return;
+        }
+
         case ContKind::Catch:
             // The protected body finished normally; the handler is not needed.
             ret(p, p.result);
@@ -2818,7 +2845,8 @@ void locate_error(Process& p) {
                 break;
             }
             case ContKind::IfBranch: case ContKind::BinRight: case ContKind::LogicRight:
-            case ContKind::BlockNext: case ContKind::Catch: case ContKind::Finalize: case ContKind::NativeArgs:
+            case ContKind::BlockNext: case ContKind::BindThen: case ContKind::Catch: case ContKind::Finalize:
+            case ContKind::NativeArgs:
             case ContKind::ClosureArgs:
             case ContKind::IndexKey: case ContKind::IndexApply: case ContKind::GetWalk:
             case ContKind::SetWalk: case ContKind::SwitchOn: case ContKind::SwitchKey:
@@ -2930,6 +2958,15 @@ std::vector<TracePlace> error_trace(Process& p, Value err) {
 /// waits for a strictness analysis. One predictable branch per suspension, and
 /// only on the path that was about to allocate anyway.
 
+// The same counts by *site* -- the function a suspension was made in and the
+// node it suspends -- since the kind alone says that `apply` is the problem
+// and not which of a program's thousands of applications. Keyed by the
+// function's index in the high half and the node in the low; counted under a
+// lock, which only a probing run ever takes.
+std::mutex g_thunk_sites_mutex;
+std::unordered_map<uint64_t, uint64_t> g_thunk_sites;
+const Image* g_thunk_sites_image = nullptr;
+
 void dbg_dump_thunks() {
     if (!g_probe_thunk) return;
     for (size_t i = 0; i < 64; ++i) {
@@ -2938,6 +2975,29 @@ void dbg_dump_thunks() {
             std::fprintf(stderr, "; thunked %-14s %llu\n", op_name(Op(i)),
                          (unsigned long long)c);
     }
+    std::lock_guard<std::mutex> g(g_thunk_sites_mutex);
+    if (!g_thunk_sites_image) return;
+    std::vector<std::pair<uint64_t, uint64_t>> sites(g_thunk_sites.begin(), g_thunk_sites.end());
+    std::sort(sites.begin(), sites.end(), [](auto& a, auto& b) { return a.second > b.second; });
+    const Image& img = *g_thunk_sites_image;
+    for (size_t i = 0; i < sites.size() && i < 25; ++i) {
+        const uint32_t func = uint32_t(sites[i].first >> 32), node = uint32_t(sites[i].first);
+        const std::string name = func < img.func_count() ? img.str(img.func(func).name).str() : "(top)";
+        std::fprintf(stderr, ";   %10llu  %-14s node %-7u in %s\n", (unsigned long long)sites[i].second,
+                     op_name(Op(img.node(node).op)), node, name.c_str());
+    }
+}
+
+/// The builtin id of `_match_at`, found once: the table is the VM's own and
+/// does not change while it runs.
+uint32_t match_at_builtin() {
+    static const uint32_t id = [] {
+        for (uint32_t i = 0; i < builtin_count(); ++i) {
+            if (std::strcmp(builtin_def(i).name, "_match_at") == 0) return i;
+        }
+        return UINT32_MAX;
+    }();
+    return id;
 }
 
 Value thunk_for(Process& p, uint32_t node, Value frame) {
@@ -3009,6 +3069,38 @@ Value thunk_for(Process& p, uint32_t node, Value frame) {
                     default: over = mul_overflow(x, y, &r); break;
                 }
                 if (!over && fixnum_fits(r)) return make_fixnum(r);
+            }
+            break;
+        }
+        case Op::Apply: {
+            // A pattern's field: `#[:ok, v, next, pr]` and `Shape.circle(r)`
+            // bind each name to `_match_at subject i`, lazily, after the test
+            // has already said the subject is an array or record of that
+            // shape. Suspending each of those reads was three or four thunks
+            // per match -- in a parser that destructures a reply at every
+            // step, most of everything it allocated -- for what is a load.
+            // It is the `get` case below, reached through the builtin the
+            // pattern compiler uses, and safe for the same reasons: the
+            // subject and index are read only when already in normal form,
+            // an in-range read cannot raise, and the element comes back as
+            // stored, thunk and all.
+            if (n.c != 2) break;
+            const Node& callee = img.node(n.a);
+            if (Op(callee.op) != Op::Builtin || callee.a != match_at_builtin()) break;
+            const uint32_t* kids = img.kids_at(n.b);
+            Value c, k;
+            if (!operand_value(p, img, kids[0], frame, &c) ||
+                !operand_value(p, img, kids[1], frame, &k) || !is_fixnum(k)) {
+                break;
+            }
+            const int64_t i = fixnum_value(k);
+            if (i < 0) break;
+            if (is_obj(c, ObjType::Array)) {
+                auto* a = static_cast<ArrayObj*>(as_obj(c));
+                if (i < int64_t(a->len) && a->items()[i] != NIL_SLOT) return a->items()[i];
+            } else if (is_obj(c, ObjType::Record)) {
+                auto* r = static_cast<RecordObj*>(as_obj(c));
+                if (i < int64_t(r->len) && r->items()[i] != NIL_SLOT) return r->items()[i];
             }
             break;
         }
@@ -3088,7 +3180,17 @@ Value thunk_for(Process& p, uint32_t node, Value frame) {
         }
         default: break;
     }
-    if (g_probe_thunk) g_thunk_counts[size_t(n.op) & 63].fetch_add(1, std::memory_order_relaxed);
+    if (g_probe_thunk) {
+        g_thunk_counts[size_t(n.op) & 63].fetch_add(1, std::memory_order_relaxed);
+        uint64_t func = 0xffffffffu;
+        if (is_obj(frame, ObjType::Frame)) {
+            Value cl = static_cast<FrameObj*>(as_obj(frame))->closure;
+            if (is_obj(cl, ObjType::Closure)) func = static_cast<ClosureObj*>(as_obj(cl))->func;
+        }
+        std::lock_guard<std::mutex> g(g_thunk_sites_mutex);
+        g_thunk_sites_image = &img;
+        ++g_thunk_sites[(func << 32) | node];
+    }
     return p.heap().make_thunk(node, frame);
 }
 

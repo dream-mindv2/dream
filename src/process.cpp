@@ -34,6 +34,7 @@ const char* cont_kind_name(ContKind k) {
         case ContKind::LogicRight: return "logic_right";
         case ContKind::UnaryFinish: return "unary_finish";
         case ContKind::BlockNext: return "block_next";
+        case ContKind::BindThen: return "bind_then";
         case ContKind::Catch: return "catch";
         case ContKind::Finalize: return "finalize";
         case ContKind::Finalized: return "finalized";

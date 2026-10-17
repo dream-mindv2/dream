@@ -80,6 +80,8 @@ enum class ContKind : uint8_t {
                  // `enter_function`)
     SetManyStep, // b = the set_many node, c = the next pair, v1 = frame; the
                  // result is the container with the pairs before it applied
+    BindThen,    // a = kids offset, b = count, c = the bind's index, v1 = frame;
+                 // the result goes in the bind's slot and the block goes on
 };
 
 struct Cont {

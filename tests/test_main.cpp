@@ -1392,6 +1392,12 @@ static void test_builtin_table_matches_compiler() {
                               "_forced",
                               "defer!",
                               "_indexed",
+                              "_append_rev",
+                              "_rev_onto",
+                              "_str_append_rev",
+                              "_set_of",
+                              "_set_add",
+                              "_set_lookup",
     };
     const uint32_t n = uint32_t(sizeof(expected) / sizeof(expected[0]));
     CHECK_EQ(builtin_count(), n);

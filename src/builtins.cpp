@@ -3478,6 +3478,269 @@ NativeResult core_indexed(Process& p, Value self, Value* args, uint32_t argc) {
     return core_array_of_list(p, self, &list, argc);
 }
 
+// --- what the supercompiler writes instead ---------------------------------------
+//
+// Builtins no program names: the supercompiler puts them where a loop was
+// written the slow way (dreams/src/accum.dr, dreams/src/hoist.dr). Each means
+// what the code it replaces means -- the same values, forced no further --
+// and where it cannot be sure of that it says so, and the code as written
+// runs instead.
+
+/// Force the spine of the list in `p.stack[at]`, leaving each cell's head on
+/// the stack above `base` in order. False, with the reason in `p.result`, if
+/// a force raised or the list is not a proper one (`what` names the operator
+/// whose error it is).
+static bool spill_spine(Process& p, size_t at, const char* what) {
+    for (;;) {
+        Value w;
+        if (!force_whnf(p, p.stack[at], &w)) return false;
+        if (is_nil(w)) return true;
+        if (!is_obj(w, ObjType::Cons)) {
+            p.result = raise_error(p, well_known(p.runtime()).type_error, what);
+            return false;
+        }
+        auto* c = static_cast<ConsObj*>(as_obj(w));
+        p.stack[at] = c->tail;
+        p.stack.push_back(c->head);
+    }
+}
+
+/// `_append_rev a r`: `a + reverse r`. A loop that grew `acc` by `acc + [x]`
+/// -- a copy of `acc` per step -- grows `r` by a cons instead, newest first,
+/// and this is what `acc` was at the end: `a` copied once, then what was
+/// appended in the order it was.
+NativeResult core_append_rev(Process& p, Value, Value* args, uint32_t) {
+    VouchesForGc vouch(p);
+    const size_t base = p.stack.size();
+    p.stack.push_back(args[0]);   // a
+    p.stack.push_back(args[1]);   // r, walked
+    if (!spill_spine(p, base + 1, "the left side of a list `+` is not a proper list")) {
+        if (!p.force_blocked) p.stack.resize(base);
+        return NativeResult::raise(p.result);
+    }
+    if (p.stack.size() == base + 2) {
+        Value a = p.stack[base];
+        p.stack.resize(base);
+        return NativeResult::ok(a);
+    }
+    // The heads above base + 2 are r's, newest first: consed in that order
+    // onto nothing they come out oldest first. The tail is kept on the stack,
+    // since forcing `a`'s spine below may collect.
+    Value tail = NIL;
+    for (size_t i = base + 2; i < p.stack.size(); ++i) tail = p.heap().make_cons(p.stack[i], tail);
+    p.stack.resize(base + 1);
+    p.stack.push_back(tail);           // base + 1: the tail
+    p.stack.push_back(p.stack[base]);  // base + 2: `a`, walked
+    if (!spill_spine(p, base + 2, "the left side of a list `+` is not a proper list")) {
+        if (!p.force_blocked) p.stack.resize(base);
+        return NativeResult::raise(p.result);
+    }
+    // `a + tail`, as `+` makes it: `a`'s spine copied, its end the tail.
+    Value out = p.stack[base + 1];
+    for (size_t i = p.stack.size(); i-- > base + 3;) out = p.heap().make_cons(p.stack[i], out);
+    p.stack.resize(base);
+    return NativeResult::ok(out);
+}
+
+/// `_rev_onto xs r`: `reverse xs` in front of `r` -- what `acc + xs` puts on
+/// the end of `acc`, kept newest first.
+NativeResult core_rev_onto(Process& p, Value, Value* args, uint32_t) {
+    VouchesForGc vouch(p);
+    const size_t base = p.stack.size();
+    p.stack.push_back(args[0]);
+    if (!spill_spine(p, base, "the right side of a list `+` is not a proper list")) {
+        if (!p.force_blocked) p.stack.resize(base);
+        return NativeResult::raise(p.result);
+    }
+    Value out = args[1];
+    for (size_t i = base + 1; i < p.stack.size(); ++i) out = p.heap().make_cons(p.stack[i], out);
+    p.stack.resize(base);
+    return NativeResult::ok(out);
+}
+
+/// `_str_append_rev a r`: `a` followed by the strings of `r`, oldest first --
+/// what `acc` was after a loop of `acc + piece`, each of which copied `acc`.
+NativeResult core_str_append_rev(Process& p, Value, Value* args, uint32_t) {
+    VouchesForGc vouch(p);
+    const size_t base = p.stack.size();
+    p.stack.push_back(args[0]);
+    p.stack.push_back(args[1]);
+    if (!spill_spine(p, base + 1, "a string `+` was handed something that is not a list of pieces")) {
+        if (!p.force_blocked) p.stack.resize(base);
+        return NativeResult::raise(p.result);
+    }
+    // Each piece forced where the `+` it replaces would have forced it.
+    size_t total = 0;
+    for (size_t i = base; i < p.stack.size(); ++i) {
+        if (i == base + 1) continue;
+        Value w;
+        if (!force_whnf(p, p.stack[i], &w)) {
+            if (!p.force_blocked) p.stack.resize(base);
+            return NativeResult::raise(p.result);
+        }
+        if (!is_obj(w, ObjType::Str)) {
+            p.stack.resize(base);
+            return type_fail(p, "cannot add a string to something that is not one");
+        }
+        p.stack[i] = w;
+        total += static_cast<StrObj*>(as_obj(w))->len;
+    }
+    Value s = p.heap().make_string(nullptr, total);
+    auto* z = static_cast<StrObj*>(as_obj(s));
+    size_t at = 0;
+    auto put = [&](Value v) {
+        auto* x = static_cast<StrObj*>(as_obj(v));
+        std::memcpy(z->data() + at, x->data(), x->len);
+        at += x->len;
+    };
+    put(p.stack[base]);
+    for (size_t i = p.stack.size(); i-- > base + 2;) put(p.stack[i]);
+    p.stack.resize(base);
+    return NativeResult::ok(s);
+}
+
+/// A value a membership set can hold by hashing: one that is evaluated, and
+/// is equal to another exactly when a map would find it as a key.
+static bool set_flat(Value v) {
+    return is_fixnum(v) || is_atom(v) || is_char(v) || is_bool(v) || is_unit(v) || is_obj(v, ObjType::Str);
+}
+
+/// `==` between two flat values, as the language decides it.
+static bool flat_equal(Value a, Value b) {
+    if (is_obj(a, ObjType::Str) && is_obj(b, ObjType::Str)) {
+        auto* x = static_cast<StrObj*>(as_obj(a));
+        auto* y = static_cast<StrObj*>(as_obj(b));
+        return x->len == y->len && std::memcmp(x->data(), y->data(), x->len) == 0;
+    }
+    return a == b;
+}
+
+// A membership set is what `list.contains x xs` would find, kept so that a
+// lookup answers exactly what the scan would -- the same answer, with the
+// same elements forced -- or says it cannot. `#[map, count, pending,
+// broken]`: each flat element hashed to its position in the scan, counted so
+// that a later element (scanned earlier: the list is consed onto) has a
+// larger one; the elements that were not yet evaluated when they came, as
+// `#[position, value]`, newest first, for a lookup to force when the scan
+// would have reached them; and whether anything makes the set unable to say
+// at all (a cell of the list not yet evaluated, an element that is not flat).
+
+static Value make_set(Process& p, Value map, int64_t count, Value pending, bool broken) {
+    Value arr = p.heap().make_array(4);
+    auto* a = static_cast<ArrayObj*>(as_obj(arr));
+    a->items()[0] = map;
+    a->items()[1] = make_fixnum(count);
+    a->items()[2] = pending;
+    a->items()[3] = make_bool(broken);
+    return arr;
+}
+
+static Value broken_set(Process& p) { return make_set(p, p.heap().make_map(0), 0, NIL, true); }
+
+/// `_set_of xs`: the set of a list. Only what is evaluated is looked at: a
+/// cell not yet evaluated breaks it -- its length is not known -- and an
+/// element not yet evaluated is pending. `xs` itself the first `contains`
+/// would have forced.
+NativeResult core_set_of(Process& p, Value, Value* args, uint32_t) {
+    int64_t n = 0;
+    for (Value cur = resolve(args[0]);; ++n) {
+        if (!is_whnf(cur) || (!is_nil(cur) && !is_obj(cur, ObjType::Cons))) return NativeResult::ok(broken_set(p));
+        if (is_nil(cur)) break;
+        cur = resolve(static_cast<ConsObj*>(as_obj(cur))->tail);
+    }
+    // The first element is scanned first, so it has the largest position.
+    Value map = p.heap().make_map(0);
+    Value pending = NIL;
+    Value cur = resolve(args[0]);
+    for (int64_t i = 0; i < n; ++i) {
+        auto* c = static_cast<ConsObj*>(as_obj(cur));
+        Value h = resolve(c->head);
+        Value next = c->tail;
+        int64_t at = n - 1 - i;
+        if (!is_whnf(h)) {
+            Value pair = p.heap().make_array(2);
+            static_cast<ArrayObj*>(as_obj(pair))->items()[0] = make_fixnum(at);
+            static_cast<ArrayObj*>(as_obj(pair))->items()[1] = c->head;
+            pending = p.heap().make_cons(pair, pending);
+        } else if (!set_flat(h)) {
+            return NativeResult::ok(broken_set(p));
+        } else {
+            Value had;
+            if (!map_lookup(p, map, h, &had)) map = map_insert(p, map, h, make_fixnum(at));
+        }
+        cur = resolve(next);
+    }
+    // `pending` was built oldest first; a lookup wants it newest first.
+    Value rev = NIL;
+    for (Value q = pending; !is_nil(q); q = static_cast<ConsObj*>(as_obj(q))->tail) {
+        rev = p.heap().make_cons(static_cast<ConsObj*>(as_obj(q))->head, rev);
+    }
+    return NativeResult::ok(make_set(p, map, n, rev, false));
+}
+
+/// `_set_add s e`: the set of `e :: xs`. Nothing is forced: an `e` not yet
+/// evaluated is pending until a scan would reach it.
+NativeResult core_set_add(Process& p, Value, Value* args, uint32_t) {
+    auto* a = static_cast<ArrayObj*>(as_obj(resolve(args[0])));
+    if (a->items()[3] == TRUE_V) return NativeResult::ok(resolve(args[0]));
+    Value map = a->items()[0];
+    int64_t at = fixnum_value(a->items()[1]);
+    Value pending = a->items()[2];
+    Value e = resolve(args[1]);
+    if (!is_whnf(e)) {
+        Value pair = p.heap().make_array(2);
+        static_cast<ArrayObj*>(as_obj(pair))->items()[0] = make_fixnum(at);
+        static_cast<ArrayObj*>(as_obj(pair))->items()[1] = args[1];
+        return NativeResult::ok(make_set(p, map, at + 1, p.heap().make_cons(pair, pending), false));
+    }
+    if (!set_flat(e)) return NativeResult::ok(broken_set(p));
+    return NativeResult::ok(make_set(p, map_insert(p, map, e, make_fixnum(at)), at + 1, pending, false));
+}
+
+/// `_set_lookup s x`: what `list.contains x xs` answers, forcing what its scan
+/// would force -- `x`, when there is anything to compare it with, and each
+/// pending element the scan reaches before it finds `x` -- or `()` when the
+/// set cannot say, for the caller to ask the list.
+NativeResult core_set_lookup(Process& p, Value, Value* args, uint32_t) {
+    VouchesForGc vouch(p);
+    const size_t base = p.stack.size();
+    p.stack.push_back(resolve(args[0]));
+    p.stack.push_back(args[1]);
+    auto set = [&]() { return static_cast<ArrayObj*>(as_obj(p.stack[base])); };
+    if (set()->items()[3] == TRUE_V) { p.stack.resize(base); return NativeResult::ok(UNIT); }
+    if (fixnum_value(set()->items()[1]) == 0) { p.stack.resize(base); return NativeResult::ok(FALSE_V); }
+    Value x;
+    if (!force_whnf(p, p.stack[base + 1], &x)) {
+        if (!p.force_blocked) p.stack.resize(base);
+        return NativeResult::raise(p.result);
+    }
+    if (!set_flat(x)) { p.stack.resize(base); return NativeResult::ok(UNIT); }
+    p.stack[base + 1] = x;
+    Value found;
+    int64_t hit = map_lookup(p, set()->items()[0], x, &found) ? fixnum_value(found) : -1;
+    // Each pending element the scan reaches before the hit -- a later one --
+    // forced and compared, newest first.
+    p.stack.push_back(set()->items()[2]);
+    for (;;) {
+        Value q = p.stack[base + 2];
+        if (is_nil(q)) break;
+        auto* pair = static_cast<ArrayObj*>(as_obj(static_cast<ConsObj*>(as_obj(q))->head));
+        if (fixnum_value(pair->items()[0]) < hit) break;
+        p.stack.push_back(pair->items()[1]);
+        Value w;
+        if (!force_whnf(p, p.stack.back(), &w)) {
+            if (!p.force_blocked) p.stack.resize(base);
+            return NativeResult::raise(p.result);
+        }
+        p.stack.pop_back();
+        if (!set_flat(w)) { p.stack.resize(base); return NativeResult::ok(UNIT); }
+        if (flat_equal(w, p.stack[base + 1])) { p.stack.resize(base); return NativeResult::ok(TRUE_V); }
+        p.stack[base + 2] = static_cast<ConsObj*>(as_obj(p.stack[base + 2]))->tail;
+    }
+    p.stack.resize(base);
+    return NativeResult::ok(make_bool(hit >= 0));
+}
+
 NativeResult core_array_to_list(Process& p, Value, Value* args, uint32_t) {
     Value v = resolve(args[0]);
     if (!is_obj(v, ObjType::Array)) return type_fail(p, "array_to_list needs an array");
@@ -4597,6 +4860,12 @@ const BuiltinDef BUILTINS[] = {
     {"_forced", 1, 0b1, bi_forced},
     {"defer!", 1, 0b0, bi_defer},
     {"_indexed", 1, 0b0, core_indexed},
+    {"_append_rev", 2, 0b01, core_append_rev},
+    {"_rev_onto", 2, 0b0, core_rev_onto},
+    {"_str_append_rev", 2, 0b01, core_str_append_rev},
+    {"_set_of", 1, 0b1, core_set_of},
+    {"_set_add", 2, 0b01, core_set_add},
+    {"_set_lookup", 2, 0b01, core_set_lookup},
 };
 
 uint32_t builtin_count() { return uint32_t(sizeof(BUILTINS) / sizeof(BUILTINS[0])); }

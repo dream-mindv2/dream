@@ -3486,6 +3486,35 @@ NativeResult core_indexed(Process& p, Value self, Value* args, uint32_t argc) {
 // and where it cannot be sure of that it says so, and the code as written
 // runs instead.
 
+/// `_memo_cells n cell`: an array of `n` cells, cell `i` the call `cell i`
+/// suspended. The supercompiler writes it for a function whose calls of
+/// itself it keeps in a table (`memo_table` in dreams/src/accum.dr): `cell`
+/// is the function's body over a flat index, capturing the table it reads.
+/// Each cell is the frame that call would have, its argument in slot 0, and
+/// a thunk of the body in it -- what a top-level value is (`global_value`) --
+/// so a cell costs two objects, and one no call reaches is never run. Nothing
+/// is forced here and nothing can collect, so what is made waits on the value
+/// stack until the array holding it is made, as `_array_of_list` does.
+NativeResult core_memo_cells(Process& p, Value, Value* args, uint32_t) {
+    Value cl = resolve(args[1]);
+    if (!is_fixnum(args[0]) || fixnum_value(args[0]) < 0 || !is_obj(cl, ObjType::Closure))
+        return type_fail(p, "_memo_cells needs a count and a function");
+    const FuncRec& f = p.code->func(static_cast<ClosureObj*>(as_obj(cl))->func);
+    if (f.arity != 1) return type_fail(p, "_memo_cells needs a function of one argument");
+    const int64_t n = fixnum_value(args[0]);
+    const size_t base = p.stack.size();
+    for (int64_t i = 0; i < n; ++i) {
+        Value fr = p.heap().make_frame_filling(cl, f.slots, 1);
+        static_cast<FrameObj*>(as_obj(fr))->slots()[0] = make_fixnum(i);
+        p.stack.push_back(p.heap().make_thunk(f.body, fr));
+    }
+    Value arr = p.heap().make_array(uint32_t(n));
+    auto* a = static_cast<ArrayObj*>(as_obj(arr));
+    for (int64_t i = 0; i < n; ++i) a->items()[i] = p.stack[base + size_t(i)];
+    p.stack.resize(base);
+    return NativeResult::ok(arr);
+}
+
 /// Force the spine of the list in `p.stack[at]`, leaving each cell's head on
 /// the stack above `base` in order. False, with the reason in `p.result`, if
 /// a force raised or the list is not a proper one (`what` names the operator
@@ -4915,6 +4944,7 @@ const BuiltinDef BUILTINS[] = {
     {"_set_add", 2, 0b01, core_set_add},
     {"_set_lookup", 2, 0b01, core_set_lookup},
     {"_set_refresh", 2, 0b01, core_set_refresh},
+    {"_memo_cells", 2, 0b11, core_memo_cells},
 };
 
 uint32_t builtin_count() { return uint32_t(sizeof(BUILTINS) / sizeof(BUILTINS[0])); }

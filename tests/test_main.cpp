@@ -1399,6 +1399,7 @@ static void test_builtin_table_matches_compiler() {
                               "_set_add",
                               "_set_lookup",
                               "_set_refresh",
+                              "_memo_cells",
     };
     const uint32_t n = uint32_t(sizeof(expected) / sizeof(expected[0]));
     CHECK_EQ(builtin_count(), n);

@@ -95,12 +95,33 @@ trunk.
 
 ## What is not done
 
-- The JIT declines a function calling a search or `put`: they evaluate
-  elements, which only interpreted code can let collect.
-- A trunk does not cross between images or through `std.wire`, and
-  cannot be ordered by `compare`.
+- The JIT compiles a function calling a search or `put`, but calls them
+  through `dream_rt_apply`, the generic path, rather than as a native it
+  knows: they may evaluate elements, and a native called directly from
+  compiled code pins the heap while it does (`NativeDef::vouches`), where
+  the generic path lets a collection run. Compiled, a queue went 274 ms to
+  112, positional reads 171 to 66 and dedupe 316 to 267; word counts went
+  550 to 626, the generic call costing more than the interpreter's direct
+  one. A search that called directly and handed an unevaluated element back
+  to be forced outside the native would have neither cost.
+- A trunk does not cross between images, and cannot be ordered by
+  `compare`. It does cross `std.wire` (tag 14, its elements), so the unit
+  cache can keep one, and `std.codec`'s formats write it as a list.
 - `c.[i => v]` is not yet `set`.
 - The supercompiler does nothing with trunks yet. What it can add is
   the second half of the design: where it can see every use of a trunk,
   choose the representation when it is made, and drop the versions a linear
   use never reads.
+
+## Where the library uses them
+
+A queue that grows under load: joined at the back with `xs + [x]`, which
+copies the queue per caller, and served from the front.
+
+- `std.sql.pool` and `std.sql.pg.pool`: the callers waiting for a
+  connection.
+- `std.http.h2`: a stream's data waiting for its flow-control window. A
+  piece sent in part is replaced in place (`trunk.set 0`).
+
+The compiler has none: `dreams/tests/scale.py` is linear on both its axes,
+and the lists it still searches are short.

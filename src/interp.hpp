@@ -7,6 +7,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "process.hpp"
 #include "runtime.hpp"
@@ -194,6 +195,9 @@ bool equal_values(Process& p, Value a, Value b, bool* raised, int depth);
 bool trunk_equal(Process& p, Value a, Value b, bool* raised, int depth);
 /// A trunk's length, and its `i`th element counted from 0, unevaluated.
 uint32_t trunk_length(Value c);
+/// A new trunk of these elements, in order (trunk.cpp). Allocates, and
+/// nothing else: the values are held only in `items` while it does.
+Value trunk_of_values(Process& p, const std::vector<Value>& items);
 Value trunk_element(Value c, uint32_t i);
 /// The name the image gives function `fi`.
 std::string image_function_name(Process& p, uint32_t fi);

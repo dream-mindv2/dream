@@ -802,6 +802,19 @@ bool trunk_equal(Process& p, Value a, Value b, bool* raised, int depth) {
 }
 
 uint32_t trunk_length(Value c) { return length(trunk_of(c)); }
+
+Value trunk_of_values(Process& p, const std::vector<Value>& items) {
+    const uint32_t n = uint32_t(items.size());
+    const uint32_t room = std::max<uint32_t>(n / 4, 4);
+    Value store = p.heap().make_trunk_store(TRUNK_ORIGIN - n / 2 - room, n + 2 * room);
+    auto* st = static_cast<TrunkStoreObj*>(as_obj(store));
+    st->lo = TRUNK_ORIGIN - n / 2;
+    st->hi = st->lo + n;
+    st->ilo = st->ihi = st->klo = st->khi = st->lo;
+    for (uint32_t i = 0; i < n; ++i) st->slots()[st->lo - st->base + i] = items[i];
+    count(counters().made);
+    return p.heap().make_trunk(store, st->lo, st->hi);
+}
 Value trunk_element(Value c, uint32_t i) { return read(c, trunk_of(c)->start + i); }
 
 void print_trunk_stats() {

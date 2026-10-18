@@ -1331,8 +1331,12 @@ NativeResult vm_share(Process& p, Value, Value* args, uint32_t) {
     Value out;
     std::string why;
     const int64_t copy_start = timeline_on() ? timeline_now() : 0;
+    const size_t bytes_before = timeline_on() ? p.runtime().shared().bytes() : 0;
     const bool shared = p.runtime().shared().share(forced, &out, &why);
-    if (timeline_on()) timeline_native(p, "share!: the copy", copy_start);
+    if (timeline_on()) {
+        timeline_native(p, "share!: copied " + std::to_string(p.runtime().shared().bytes() - bytes_before) +
+                               " bytes", copy_start);
+    }
     if (!shared) {
         return NativeResult::raise(raise_error(p, well_known(p.runtime()).type_error, why));
     }
@@ -4680,6 +4684,8 @@ enum : uint8_t {
     // fields. Read back only where the atom already exists, as an atom is:
     // a record crosses to a program that declares it.
     WIRE_RECORD = 13,
+    // A trunk: a count, then the elements, as an array is.
+    WIRE_TRUNK = 14,
 };
 
 void wire_le(std::string* out, uint64_t v, int width) {
@@ -4784,6 +4790,15 @@ bool wire_write(Process& p, Value v, std::string* out, int depth) {
                 wire_le(out, r->len, 4);
                 for (uint32_t i = 0; i < r->len; ++i) {
                     if (!wire_write(p, static_cast<RecordObj*>(as_obj(v))->items()[i], out, depth + 1)) return false;
+                }
+                return true;
+            }
+            case ObjType::Trunk: {
+                const uint32_t n = trunk_length(v);
+                out->push_back(char(WIRE_TRUNK));
+                wire_le(out, n, 4);
+                for (uint32_t i = 0; i < n; ++i) {
+                    if (!wire_write(p, trunk_element(v, i), out, depth + 1)) return false;
                 }
                 return true;
             }
@@ -4963,6 +4978,20 @@ struct WireReader {
                 Value arr = p.heap().make_array(uint32_t(n));
                 for (uint64_t i = 0; i < n; ++i) static_cast<ArrayObj*>(as_obj(arr))->items()[i] = items[i];
                 *out = arr;
+                return true;
+            }
+            case WIRE_TRUNK: {
+                if (!has(4)) return false;
+                uint64_t n = le(4);
+                if (n > len) return false;
+                std::vector<Value> items;
+                items.reserve(size_t(n));
+                for (uint64_t i = 0; i < n; ++i) {
+                    Value item;
+                    if (!read(&item, depth + 1)) return false;
+                    items.push_back(item);
+                }
+                *out = trunk_of_values(p, items);
                 return true;
             }
             case WIRE_RECORD: {

@@ -82,7 +82,14 @@ if [[ "$missing_policy_rc" != 2 || "$missing_policy" != *'needs a value'* ]]; th
   fail=$((fail + 1))
 fi
 
-for src in "$HERE"/programs/*.dr; do
+# Each program is a case of its own, run as a job beside the others: they
+# share nothing but the compiler, which keeps what it builds (`--cache`), and
+# a case is mostly waiting on a VM. What each prints goes to a log of its own,
+# and the logs are shown in order once every case is done, so the output reads
+# as it did when they ran one after another.
+e2e_case() {
+  src="$1"
+
   name="$(basename "$src" .dr)"
   expected="$HERE/programs/$name.expected"
   image="$WORK/$name.dream"
@@ -90,8 +97,7 @@ for src in "$HERE"/programs/*.dr; do
   if ! "${compile[@]}" "$src" -o "$image" >"$WORK/$name.compile" 2>&1; then
     echo "FAIL $name (compile)"
     sed 's/^/    /' "$WORK/$name.compile"
-    fail=$((fail + 1))
-    continue
+    return 1
   fi
 
   # A program may set VM environment variables in `<name>.env`, one
@@ -129,8 +135,7 @@ for src in "$HERE"/programs/*.dr; do
       fi
     done < "$HERE/programs/$name.jit"
     if [[ "$compiled_ok" == false ]]; then
-      fail=$((fail + 1))
-      continue
+      return 1
     fi
   fi
   jit_out="$(run_image env "${env_args[@]}" "$dream" "${jit_args[@]}" "$image" 2>&1)"
@@ -141,15 +146,13 @@ for src in "$HERE"/programs/*.dr; do
   if [[ "$jit_out" != "$int_out" || "$jit_rc" != "$int_rc" ]]; then
     echo "FAIL $name (the two tiers disagree)"
     diff <(printf '%s\n' "$int_out") <(printf '%s\n' "$jit_out") | sed 's/^/    /'
-    fail=$((fail + 1))
-    continue
+    return 1
   fi
 
   if ! diff -q <(printf '%s\n' "$jit_out") "$expected" >/dev/null; then
     echo "FAIL $name (output)"
     diff "$expected" <(printf '%s\n' "$jit_out") | sed 's/^/    /'
-    fail=$((fail + 1))
-    continue
+    return 1
   fi
 
   if [[ "$name" == jit_recursion_loops ]]; then
@@ -157,13 +160,25 @@ for src in "$HERE"/programs/*.dr; do
                   --stats --jit-threshold 1 "$image" 2>&1)"
     if [[ "$policy_out" == *'jit on'* && "$policy_out" != *'; jit policy density'* ]]; then
       echo "FAIL jit_policy (CLI did not override the environment)"
-      fail=$((fail + 1))
-      continue
+      return 1
     fi
   fi
 
   echo "ok   $name"
-  pass=$((pass + 1))
+  return 0
+}
+
+jobs_max="${E2E_JOBS:-$(( ($(nproc 2>/dev/null || echo 2) + 1) / 2 ))}"
+for src in "$HERE"/programs/*.dr; do
+  name="$(basename "$src" .dr)"
+  ( e2e_case "$src" >"$WORK/$name.log" 2>&1; echo $? >"$WORK/$name.rc" ) &
+  while [[ "$(jobs -rp | wc -l)" -ge "$jobs_max" ]]; do wait -n; done
+done
+wait
+for src in "$HERE"/programs/*.dr; do
+  name="$(basename "$src" .dr)"
+  cat "$WORK/$name.log"
+  if [[ "$(cat "$WORK/$name.rc" 2>/dev/null)" == 0 ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
 done
 
 # --- shebang images ---------------------------------------------------------

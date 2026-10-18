@@ -3460,6 +3460,24 @@ NativeResult core_array_of_list(Process& p, Value, Value* args, uint32_t) {
     return NativeResult::ok(arr);
 }
 
+/// `_indexed`: a list read into an array, and anything else as it is. It is
+/// never written in a program: the supercompiler puts it where a loop reads a
+/// list it is handed only by position and has measured it already, so that
+/// each read is constant time rather than a walk (dreams/src/hoist.dr). What
+/// it is handed may not be a list -- the loop's `.[i]` and `len` mean the same
+/// of an array or a string -- and then nothing changes. It forces the spine,
+/// which is why the compiler only puts it after the loop's own `len`.
+NativeResult core_indexed(Process& p, Value self, Value* args, uint32_t argc) {
+    Value w;
+    {
+        VouchesForGc vouch(p);
+        if (!force_whnf(p, args[0], &w)) return NativeResult::raise(p.result);
+    }
+    if (!is_nil(w) && !is_obj(w, ObjType::Cons)) return NativeResult::ok(w);
+    Value list = w;
+    return core_array_of_list(p, self, &list, argc);
+}
+
 NativeResult core_array_to_list(Process& p, Value, Value* args, uint32_t) {
     Value v = resolve(args[0]);
     if (!is_obj(v, ObjType::Array)) return type_fail(p, "array_to_list needs an array");
@@ -4578,6 +4596,7 @@ const BuiltinDef BUILTINS[] = {
     {"_settled", 1, 0b0, bi_settled},
     {"_forced", 1, 0b1, bi_forced},
     {"defer!", 1, 0b0, bi_defer},
+    {"_indexed", 1, 0b0, core_indexed},
 };
 
 uint32_t builtin_count() { return uint32_t(sizeof(BUILTINS) / sizeof(BUILTINS[0])); }

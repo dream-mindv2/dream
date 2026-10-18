@@ -157,8 +157,7 @@ dream_result dream_vm_run(dream_vm* vm, const char* entry) {
 
     auto root = vm->sched->create_process();
     vm->root = root;
-    Value cl = root->heap().make_closure(func, 0);
-    prime_apply(*root, cl, 0);
+    prime_entry(*root, vm->rt.image(), func);
 
     bool clean = vm->sched->run(root);
 

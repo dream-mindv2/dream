@@ -20,6 +20,10 @@ void run_process(Process& p, int64_t budget);
 /// Set up a fresh process to apply `callee` to `argc` values already pushed on
 /// its value stack, and to halt when that returns.
 void prime_apply(Process& p, Value callee, uint32_t argc);
+/// Set up a fresh process to run the program's entry, function `func` of
+/// `img`: `main!` as a value, or `main! ()` called with a unit for each
+/// parameter it was written with.
+void prime_entry(Process& p, const Image& img, uint32_t func);
 /// Set up a fresh process to force `v` and halt.
 void prime_force(Process& p, Value v);
 

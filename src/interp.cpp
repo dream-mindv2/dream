@@ -3310,6 +3310,15 @@ void prime_apply(Process& p, Value callee, uint32_t argc) {
     enter(p, callee);
 }
 
+void prime_entry(Process& p, const Image& img, uint32_t func) {
+    // `let main! () = ..` is a function of one argument, and a program
+    // that writes it means it to be called -- applied to nothing, it was
+    // a closure nobody entered, and the run printed nothing and succeeded.
+    const uint32_t arity = img.func(func).arity;
+    for (uint32_t i = 0; i < arity; ++i) p.stack.push_back(UNIT);
+    prime_apply(p, p.heap().make_closure(func, 0), arity);
+}
+
 void prime_force(Process& p, Value v) {
     p.conts.clear();
     push_cont(p, ContKind::Halt, 0, 0, 0, UNIT);

@@ -1,0 +1,5 @@
+// `let main! () = ..` is called with a unit: an entry written as a function
+// of one argument is meant to run, not to be handed back as a closure.
+import std.console;
+
+let main! () = console.print! "main! () ran";

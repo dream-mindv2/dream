@@ -3486,6 +3486,31 @@ NativeResult core_indexed(Process& p, Value self, Value* args, uint32_t argc) {
 // and where it cannot be sure of that it says so, and the code as written
 // runs instead.
 
+/// `_list_drop n xs`: `xs` past its first `n` cells, as `list.drop` is,
+/// forcing those cells and no element. The supercompiler writes it where an
+/// aggregate of a growing prefix (`maximum (take (i + 1) xs)`) is carried from
+/// one step to the next: the rest past the prefix is where the next element
+/// comes from, and `take n` forced the same cells to make the prefix.
+NativeResult core_list_drop(Process& p, Value, Value* args, uint32_t) {
+    if (!is_fixnum(args[0])) return type_fail(p, "_list_drop needs a count");
+    VouchesForGc vouch(p);
+    const size_t base = p.stack.size();
+    p.stack.push_back(args[1]);
+    for (int64_t n = fixnum_value(args[0]); n > 0; --n) {
+        Value w;
+        if (!force_whnf(p, p.stack[base], &w)) {
+            if (!p.force_blocked) p.stack.resize(base);
+            return NativeResult::raise(p.result);
+        }
+        if (is_nil(w)) { p.stack[base] = w; break; }
+        if (!is_obj(w, ObjType::Cons)) { p.stack.resize(base); return type_fail(p, "_list_drop needs a list"); }
+        p.stack[base] = static_cast<ConsObj*>(as_obj(w))->tail;
+    }
+    Value rest = p.stack[base];
+    p.stack.resize(base);
+    return NativeResult::ok(rest);
+}
+
 /// `_memo_cells n cell`: an array of `n` cells, cell `i` the call `cell i`
 /// suspended. The supercompiler writes it for a function whose calls of
 /// itself it keeps in a table (`memo_table` in dreams/src/accum.dr): `cell`
@@ -5014,6 +5039,7 @@ const BuiltinDef BUILTINS[] = {
     {"_memo_cells", 2, 0b11, core_memo_cells},
     {"_tally", 1, 0b1, core_tally},
     {"_tally_lookup", 3, 0b000, core_tally_lookup},
+    {"_list_drop", 2, 0b01, core_list_drop},
 };
 
 uint32_t builtin_count() { return uint32_t(sizeof(BUILTINS) / sizeof(BUILTINS[0])); }

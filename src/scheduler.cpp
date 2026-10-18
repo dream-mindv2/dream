@@ -33,6 +33,81 @@ std::unordered_map<uint64_t, Scheduler*>& live_schedulers() {
     return m;
 }
 std::atomic<uint64_t> next_serial{1};
+
+// `DREAM_TIMELINE=FILE`: every slice a process ran, every process spawned and
+// every join that had to wait, written to FILE when the first scheduler stops.
+// A parallel build's wall clock is its longest chain of dependent work, not
+// the sum of the work ("Precompile experiment lessons": cutting CPU moved
+// nothing), and the chain is only visible from these three: a slice is work,
+// a spawn starts a chain and a join ends a wait on one.
+// `dream/tools/timeline.py` follows the chain back from the root's exit.
+struct TimelineEvent {
+    char kind;          // 's' slice (`other`: microseconds of it collecting),
+                        // 'c' spawn (t0..t1: copying the work over),
+                        // 'j' join wait, 'x' a joined result copied in,
+                        // 'n' a native call of 2 ms or more, 'r' a sampled step
+    char end;           // a slice's end: 'h' halted, 'p' parked, 'y' yielded
+    uint32_t worker;
+    uint64_t sched, pid, other;
+    int64_t t0, t1;
+    std::string label;
+};
+struct Timeline {
+    const char* path = std::getenv("DREAM_TIMELINE");
+    uint64_t owner = 0;
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    std::mutex mutex;
+    std::vector<TimelineEvent> events;
+
+    int64_t now() const {
+        return std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - start).count();
+    }
+    void add(TimelineEvent e) {
+        std::lock_guard<std::mutex> g(mutex);
+        events.push_back(std::move(e));
+    }
+    void write() {
+        std::lock_guard<std::mutex> g(mutex);
+        FILE* f = std::fopen(path, "w");
+        if (!f) return;
+        for (const auto& e : events) {
+            std::fprintf(f, "%c %c %u %llu %llu %llu %lld %lld %s\n", e.kind, e.end ? e.end : '-',
+                         e.worker, (unsigned long long)e.sched, (unsigned long long)e.pid,
+                         (unsigned long long)e.other, (long long)e.t0, (long long)e.t1,
+                         e.label.empty() ? "-" : e.label.c_str());
+        }
+        std::fclose(f);
+        events.clear();
+    }
+};
+Timeline& timeline() {
+    static Timeline t;
+    return t;
+}
+// The slice this worker is in, for a process that ends the VM from inside one
+// (`write_timeline`), and which worker it is, so that what it spawns can be
+// put on another (`spawn_from`).
+thread_local int64_t slice_started = 0;
+thread_local unsigned slice_worker = 0;
+
+// What a process was spawned to run, by the function its work belongs to: a
+// closure's own, or the function whose frame a suspension was made in.
+std::string work_label(Process& p, Value work) {
+    if (is_obj(work, ObjType::Closure)) {
+        return image_function_name(p, static_cast<ClosureObj*>(as_obj(work))->func);
+    }
+    if (is_obj(work, ObjType::Thunk)) {
+        Value frame = static_cast<ThunkObj*>(as_obj(work))->frame;
+        if (is_obj(frame, ObjType::Frame)) {
+            Value c = static_cast<FrameObj*>(as_obj(frame))->closure;
+            if (is_obj(c, ObjType::Closure)) {
+                return image_function_name(p, static_cast<ClosureObj*>(as_obj(c))->func);
+            }
+        }
+    }
+    return "";
+}
 }  // namespace
 
 Scheduler::Scheduler(Runtime& rt, unsigned worker_count) : rt_(rt) {
@@ -41,6 +116,7 @@ Scheduler::Scheduler(Runtime& rt, unsigned worker_count) : rt_(rt) {
         workers_.push_back(std::make_unique<Worker>());
     }
     serial_ = next_serial.fetch_add(1);
+    if (timeline().path && timeline().owner == 0) timeline().owner = serial_;
     {
         std::unique_lock<std::shared_mutex> g(live_mutex());
         live_schedulers()[serial_] = this;
@@ -78,7 +154,7 @@ void Scheduler::release_io_waits(uint64_t serial, size_t count) {
 }
 
 unsigned Scheduler::default_workers() {
-    return std::min(usable_cores(), 8u);
+    return usable_cores();
 }
 
 void Scheduler::start() {
@@ -115,6 +191,7 @@ void Scheduler::stop() {
     for (auto& w : workers_) {
         if (w->thread.joinable()) w->thread.join();
     }
+    if (timeline().path && timeline().owner == serial_) timeline().write();
 }
 
 std::shared_ptr<Process> Scheduler::create_process() {
@@ -123,12 +200,13 @@ std::shared_ptr<Process> Scheduler::create_process() {
     return p;
 }
 
-void Scheduler::enqueue(const std::shared_ptr<Process>& p) {
+void Scheduler::enqueue(const std::shared_ptr<Process>& p, unsigned avoid) {
     p->status.store(ProcStatus::Runnable, std::memory_order_relaxed);
     // Round-robin placement. A process that blocks and wakes may land on a
     // different worker than it started on, which is fine: nothing in a process
     // is tied to a thread.
     unsigned i = next_worker_.fetch_add(1, std::memory_order_relaxed) % workers_.size();
+    if (i == avoid && workers_.size() > 1) i = (i + 1) % workers_.size();
     {
         std::lock_guard<std::mutex> g(workers_[i]->mutex);
         workers_[i]->queue.push_back(p);
@@ -138,7 +216,19 @@ void Scheduler::enqueue(const std::shared_ptr<Process>& p) {
     // so the ordering costs nothing worth measuring and buys the deadlock
     // check a count it can trust. See `active_`.
     active_.fetch_add(1);
-    work_cv_.notify_one();
+    wake_idle();
+}
+
+// Through the mutex an idle worker tests `queued_` under, for the reason
+// `notify_done` gives: a worker that found the queues empty and has not yet
+// gone to sleep would sleep through a notify sent in between -- for up to
+// 16 ms now, not 500us. Only when a worker is idle, so a busy machine
+// takes no lock to enqueue.
+void Scheduler::wake_idle() {
+    if (idle_workers_.load() > 0) {
+        { std::lock_guard<std::mutex> g(idle_mutex_); }
+        work_cv_.notify_one();
+    }
 }
 
 std::shared_ptr<Process> Scheduler::take_local(unsigned index) {
@@ -192,6 +282,15 @@ void Scheduler::note_idle(bool idle) {
 }
 
 void Scheduler::worker_loop(unsigned index) {
+    // How many times running this worker has looked and found nothing. Each
+    // doubles the next sleep, from 500us to 16 ms: an idle worker used to wake
+    // every 500us for ever, and the looking costs atomics on lines the busy
+    // workers keep writing, which is why the default was eight workers and a
+    // parallel compile left two thirds of a 24-thread machine unused. A wake
+    // is never lost to the long sleeps -- `wake_idle` notifies under the lock
+    // this tests `queued_` under -- so they cost a process nothing; what they
+    // stretch is only how soon a deadlock is noticed.
+    unsigned idle_rounds = 0;
     while (running_.load(std::memory_order_relaxed)) {
         std::shared_ptr<Process> p = take_local(index);
         if (!p) p = steal(index);
@@ -200,9 +299,12 @@ void Scheduler::worker_loop(unsigned index) {
             note_idle(true);
             {
                 std::unique_lock<std::mutex> lk(idle_mutex_);
-                work_cv_.wait_for(lk, 500us);
+                if (queued_.load() == 0 && running_.load(std::memory_order_relaxed)) {
+                    work_cv_.wait_for(lk, 500us * (1u << std::min(idle_rounds, 5u)));
+                }
             }
             note_idle(false);
+            ++idle_rounds;
 
             // Nothing runnable anywhere, every worker asleep, yet processes
             // remain: they are all parked on a message that will never come.
@@ -223,6 +325,7 @@ void Scheduler::worker_loop(unsigned index) {
             continue;
         }
 
+        idle_rounds = 0;
         // Already counted by whichever of `take_local` or `steal` produced it.
         run_slice(p, index);
         runnable_.fetch_sub(1, std::memory_order_relaxed);
@@ -254,12 +357,24 @@ void Scheduler::run_slice(const std::shared_ptr<Process>& p, unsigned index) {
     p->wait_reason.store(WaitReason::None, std::memory_order_relaxed);
     p->wait_fd.store(-1, std::memory_order_relaxed);
     uint64_t before = p->total_reductions;
+    const bool timed = timeline().path != nullptr;
+    const int64_t slice_start = timed ? timeline().now() : 0;
+    slice_started = slice_start;
+    slice_worker = index;
+    // A slice carries the microseconds its process was stopped collecting.
+    const uint64_t gc_before = timed ? p->heap().nanos_minor() + p->heap().nanos_major() : 0;
+    auto record = [&](char end) {
+        if (!timed) return;
+        const uint64_t gc = (p->heap().nanos_minor() + p->heap().nanos_major() - gc_before) / 1000;
+        timeline().add({'s', end, index, serial_, p->id(), gc, slice_start, timeline().now(), {}});
+    };
 
     run_process(*p, REDUCTIONS_PER_SLICE);
 
     total_reductions_.fetch_add(p->total_reductions - before, std::memory_order_relaxed);
 
     if (p->mode == Mode::Halted) {
+        record('h');
         finish(p);
         return;
     }
@@ -282,6 +397,7 @@ void Scheduler::run_slice(const std::shared_ptr<Process>& p, unsigned index) {
                 !(p->kill_requested.load(std::memory_order_acquire) &&
                   !p->kill_unwinding && p->cleanup_depth == 0)) {
                 p->status.store(ProcStatus::Waiting, std::memory_order_release);
+                record('p');
                 return;
             }
             // Woken before we could park: fall through and run again. The
@@ -294,6 +410,7 @@ void Scheduler::run_slice(const std::shared_ptr<Process>& p, unsigned index) {
     // Budget spent mid-computation, or a wake beat the park. Put it back and
     // let something else run; the whole state is in the Process, so there is
     // nothing to save.
+    record('y');
     requeue(index, p);
 }
 
@@ -316,7 +433,7 @@ void Scheduler::requeue(unsigned index, const std::shared_ptr<Process>& p) {
         others = workers_[index]->queue.size() > 1;
     }
     active_.fetch_add(1);  // see `enqueue`
-    if (others) work_cv_.notify_one();
+    if (others) wake_idle();
 }
 
 size_t Scheduler::queued() const {
@@ -729,6 +846,26 @@ bool Scheduler::wait_for_all() {
     return live_.load() == 0;
 }
 
+void write_timeline(Process& exiting) {
+    Timeline& t = timeline();
+    if (!t.path || !t.owner) return;
+    t.add({'s', 'h', slice_worker, t.owner, exiting.id(), 0, slice_started, t.now(), {}});
+    t.write();
+}
+
+bool timeline_on() { return timeline().path != nullptr; }
+int64_t timeline_now() { return timeline().now(); }
+void timeline_native(Process& p, const std::string& name, int64_t t0) {
+    Timeline& t = timeline();
+    t.add({'n', 0, slice_worker, t.owner, p.id(), 0, t0, t.now(), name});
+}
+
+void timeline_sample(Process& p, uint32_t fi) {
+    Timeline& t = timeline();
+    int64_t now = t.now();
+    t.add({'r', 0, slice_worker, t.owner, p.id(), fi, now, now, p.runtime().profile_function_name(fi)});
+}
+
 // ---------------------------------------------------------------------------
 // Process-facing operations
 // ---------------------------------------------------------------------------
@@ -740,9 +877,20 @@ uint64_t Scheduler::spawn_from(Process& parent, Value work) {
     // The work crosses a heap boundary, so it is copied. A closure copies with
     // its captured values, which is exactly the isolation we want: the child
     // shares no mutable state with its parent.
+    const int64_t copy_start = timeline().path ? timeline().now() : 0;
     Value copied = Heap::copy_between(child->heap(), work);
+    if (timeline().path) {
+        int64_t t = timeline().now();
+        timeline().add({'c', 0, 0, serial_, parent.id(), child->id(), copy_start, t, work_label(parent, work)});
+    }
     prime_apply(*child, copied, 0);
-    enqueue(child);
+    // Never on the spawner's own worker. A spawner that yields goes to the back
+    // of that worker's queue, so a child placed there was a slice the parent
+    // waited out before it could spawn the next: a self-compile's root, dealing
+    // 200 parts, stalled 270 ms a third of the way through, behind its own
+    // first children (`DREAM_TIMELINE` found it). The parent is usually the
+    // process the rest are waiting on.
+    enqueue(child, slice_worker);
     return child->id();
 }
 
@@ -779,7 +927,11 @@ Scheduler::JoinState Scheduler::join(Process& p, uint64_t target, Value* out) {
 
     std::lock_guard<std::mutex> g(proc->waiters_mutex);
     if (proc->is_done()) {
+        const int64_t copy_start = timeline().path ? timeline().now() : 0;
         *out = Heap::copy_between(p.heap(), proc->exit_value);
+        if (timeline().path) {
+            timeline().add({'x', 0, 0, serial_, p.id(), target, copy_start, timeline().now(), {}});
+        }
         if (proc->failed) {
             // Delivered to a joiner, so it is handled; drop it from the list
             // the runtime reports at shutdown.
@@ -792,6 +944,10 @@ Scheduler::JoinState Scheduler::join(Process& p, uint64_t target, Value* out) {
     // Register before parking, under the same lock the exiting process takes,
     // so an exit that happens right now cannot slip past us.
     proc->waiters.push_back(p.id());
+    if (timeline().path) {
+        int64_t t = timeline().now();
+        timeline().add({'j', 0, 0, serial_, p.id(), target, t, t, {}});
+    }
     {
         std::lock_guard<std::mutex> g2(p.sched_mutex);
         p.park_requested = true;

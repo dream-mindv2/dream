@@ -834,6 +834,7 @@ NativeResult os_exit(Process& p, Value, Value* args, uint32_t) {
     // all until this line existed.
     p.runtime().print_profile();
     p.runtime().print_stats();
+    write_timeline(p);
     // `_Exit` runs no destructors, and a C library's are often where it
     // writes out what it was holding. The exiting process's are the ones it
     // can run safely: every other process is still running on its own worker.

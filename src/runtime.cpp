@@ -5,6 +5,7 @@
 #include "os.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <chrono>
 #include <ctime>
 #include <cstdio>
@@ -72,6 +73,7 @@ Runtime::Runtime(bool owns_host_services)
 void Runtime::enable_profile(size_t top) {
     profiling_ = true;
     profile_top_ = top;
+    if (const char* pid = std::getenv("DREAM_PROFILE_PID")) profile_pid_ = std::strtoull(pid, nullptr, 10);
     // Sized from the image, so a function index is a slot and no lookup is
     // needed on the hot path. An image loaded after this call is not profiled,
     // which cannot happen: the image is loaded before anything runs.
@@ -86,11 +88,30 @@ void Runtime::enable_profile(size_t top) {
 /// which `dreams --ir` maps back to where it was written. Without it the
 /// largest row of a compile's profile was a sum of hundreds of unrelated
 /// functions.
+///
+/// It is also named after the function it was written in. Lowering numbers a
+/// function's lambdas, thunks and fused loops right after the function
+/// itself, so the nearest named function before it is the one it came from
+/// -- `<fused list>#2647 in map_modules` says where to look without `--ir`,
+/// whose numbering a whole-program lowering need not share with a build in
+/// parts.
 static std::string profile_name(const Image& img, uint32_t fi) {
-    StringRef name = img.str(img.func(fi).name);
-    std::string out(name.data, name.len);
-    if (!out.empty() && out[0] == '<') out += "#" + std::to_string(fi);
+    auto name_of = [&img](uint32_t i) {
+        StringRef name = img.str(img.func(i).name);
+        return std::string(name.data, name.len);
+    };
+    std::string out = name_of(fi);
+    if (out.empty() || out[0] != '<') return out;
+    out += "#" + std::to_string(fi);
+    for (uint32_t i = fi; i-- > 0;) {
+        std::string outer = name_of(i);
+        if (!outer.empty() && outer[0] != '<') return out + " in " + outer;
+    }
     return out;
+}
+
+std::string Runtime::profile_function_name(uint32_t fi) const {
+    return image_ ? dream::profile_name(*image_, fi) : std::string();
 }
 
 void Runtime::print_profile() const {

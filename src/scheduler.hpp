@@ -33,22 +33,17 @@ public:
     Scheduler(Runtime& rt, unsigned worker_count);
     ~Scheduler();
 
-    /// How many workers to run when nobody said, which is not one per core.
+    /// How many workers to run when nobody said: one per core this process may
+    /// use (`usable_cores()`, which a pinned or containerized process has
+    /// fewer of than the machine).
     ///
-    /// A worker with nothing to do is not free: it wakes every 500us to look
-    /// for work, and the looking costs atomics on lines the one worker that
-    /// *is* running the program keeps writing. A program with a single process
-    /// -- which is every build, every compile and most scripts -- therefore
-    /// pays for every core the machine happens to have. Measured on a 24-core
-    /// machine, a self-compile takes 2.75 s with four workers and 3.03 s with
-    /// twenty-four; the curve is flat between two and eight and climbs after.
-    ///
-    /// Eight is the same compromise `GcPool` makes, for the same reason and
-    /// with the same escape hatch: `-j` is how a program that really does have
-    /// twenty-four runnable processes asks for twenty-four workers.
-    ///
-    /// "Cores" is `usable_cores()`: the ones this process may run on, which
-    /// a pinned or containerized process has fewer of than the machine.
+    /// It was capped at eight, because an idle worker woke every 500us to look
+    /// for work and a single-process program paid for every core the machine
+    /// had: 2.75 s for a self-compile with four workers, 3.03 s with
+    /// twenty-four. Idle workers now back off (`worker_loop`), and a compile is
+    /// no longer one process -- it is a few hundred parts, and on a 24-thread
+    /// machine the cap was 4.9 s against 4.4 for sixteen workers. `-j` still
+    /// says how many.
     static unsigned default_workers();
     Scheduler(const Scheduler&) = delete;
     Scheduler& operator=(const Scheduler&) = delete;
@@ -59,7 +54,8 @@ public:
 
     /// Register a new process. It is not runnable until `enqueue`.
     std::shared_ptr<Process> create_process();
-    void enqueue(const std::shared_ptr<Process>& p);
+    /// Make `p` runnable on some worker other than `avoid`, when there is one.
+    void enqueue(const std::shared_ptr<Process>& p, unsigned avoid = UINT32_MAX);
 
     /// Write a snapshot of every process and open handle to stderr.
     ///
@@ -212,6 +208,8 @@ private:
     /// The round's last report: the walks, and the freeing.
     void census_finish(uint64_t round);
     void note_idle(bool idle);
+    /// Tell an idle worker there is work, if one is idle.
+    void wake_idle();
 
     Runtime& rt_;
     std::vector<std::unique_ptr<Worker>> workers_;
@@ -301,5 +299,19 @@ private:
     /// Wake `wait_for_all` after changing what it waits on. See the definition.
     void notify_done();
 };
+
+/// Write what `DREAM_TIMELINE` recorded, for a run ending now from inside
+/// `exiting`'s slice (`os.exit!`), which no scheduler will see stop.
+void write_timeline(Process& exiting);
+/// Whether `DREAM_TIMELINE` is recording, and its clock in microseconds.
+bool timeline_on();
+int64_t timeline_now();
+/// A native call of `p`'s that ran from `t0` until now without yielding: a
+/// long one is a slice no scheduler could have cut.
+void timeline_native(Process& p, const std::string& name, int64_t t0);
+/// One of a profiled process's steps, in function `fi`, sampled by its time:
+/// with `--profile`, every 1024th step a profiled process takes is recorded,
+/// so its work can be told apart by when it ran.
+void timeline_sample(Process& p, uint32_t fi);
 
 }  // namespace dream

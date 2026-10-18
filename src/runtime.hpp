@@ -284,6 +284,14 @@ public:
     // increment does not change one.
     void enable_profile(size_t top);
     bool profiling() const { return profiling_; }
+    /// Whether `pid`'s steps are counted: every process's, or with
+    /// `DREAM_PROFILE_PID` only that one's. A parallel program's root does
+    /// the serial work between its parallel phases and waits through the
+    /// rest, so its profile alone is the serial part of the wall clock
+    /// (`dream/tools/timeline.py` says how much that is).
+    bool profiling_for(uint64_t pid) const {
+        return profiling_ && (profile_pid_ == 0 || profile_pid_ == pid);
+    }
     void note_reduction(uint32_t func_index) { note_reductions(func_index, 1); }
     /// The same for a run of reductions charged at once, which is how a
     /// JIT-compiled body reports what it spent: it does not come back between
@@ -310,6 +318,9 @@ public:
     /// places that have to call it -- the end of a run, and `exit!`, which
     /// never returns to it -- can call it blind.
     void print_profile() const;
+    /// A function as the profile names it: a lambda or a thunk by its index
+    /// and the function it was written in.
+    std::string profile_function_name(uint32_t fi) const;
 
     // --- what the run cost ---
     //
@@ -384,6 +395,7 @@ private:
     std::vector<std::atomic<const ModuleDef*>> import_defs_;
     std::vector<std::atomic<uint64_t>> field_cache_;
     bool profiling_ = false;
+    uint64_t profile_pid_ = 0;
     bool stats_ = false;
     int64_t run_wall_ns_ = 0;
     int64_t run_cpu_ns_ = 0;

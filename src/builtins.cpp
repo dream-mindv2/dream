@@ -1312,7 +1312,10 @@ NativeResult vm_share(Process& p, Value, Value* args, uint32_t) {
     }
     Value out;
     std::string why;
-    if (!p.runtime().shared().share(forced, &out, &why)) {
+    const int64_t copy_start = timeline_on() ? timeline_now() : 0;
+    const bool shared = p.runtime().shared().share(forced, &out, &why);
+    if (timeline_on()) timeline_native(p, "share!: the copy", copy_start);
+    if (!shared) {
         return NativeResult::raise(raise_error(p, well_known(p.runtime()).type_error, why));
     }
     return NativeResult::ok(out);

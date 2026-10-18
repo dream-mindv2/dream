@@ -51,7 +51,7 @@ const char* USAGE =
     "      --version        print which VM this is and exit\n"
     "  -x, --exec <name>    run <name>.dream from the installation, not from here\n"
     "  -e, --entry <name>   run this global instead of `main!`\n"
-    "  -j, --workers <n>    scheduler threads (default: cores, capped at 8)\n"
+    "  -j, --workers <n>    scheduler threads (default: one per usable core)\n"
     "      --dump           disassemble the image and exit\n"
     "      --stats          print reduction and heap statistics\n"
     "      --profile [n]    count reductions per function and print the hottest\n"

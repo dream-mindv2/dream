@@ -187,6 +187,8 @@ std::string record_shown_name(Process& p, Value v);
 
 /// A short, non-forcing description, for error messages.
 std::string describe(Process& p, Value v);
+/// The name the image gives function `fi`.
+std::string image_function_name(Process& p, uint32_t fi);
 
 Value make_integer(Process& p, int64_t v);
 

@@ -1826,3 +1826,58 @@ the analysis no longer counts it, nor a name for it (what a pattern binds a
 subject to). Worth about 5% on a compiled JSON grammar's large document and
 nothing measurable on a self-compile; it mattered most to inlined code, which
 is made of such bindings. `DREAM_JIT_WHY` now names the binding it refuses.
+
+## The timeline, and what a parallel compile was waiting on (2026-10-18)
+
+A self-compile is a few hundred processes -- parse, three resolution walks,
+lowering and two type-check passes, each a part per module -- joined by a
+root that does the serial work between them. Its wall clock is the longest
+chain of dependent work through those, and no profile of reductions can
+see a chain: "Precompile experiment lessons" cut CPU and moved nothing.
+
+`DREAM_TIMELINE=FILE` records, with no cost unless set: every slice a
+process ran (and how long of it was collecting), every spawn (and what the
+work's closure belongs to), every join that had to wait, every result copied
+in by a join, and every native call of 2 ms or more. With `--profile N` and
+`DREAM_PROFILE_PID=PID`, every 1024th step of that process is sampled too,
+by time. `dream/tools/timeline.py FILE` walks back from the root's exit --
+through a process's slices, across a join to the end of what it waited on,
+from a first slice to the spawn -- and prints the path, what was work and
+what was waiting, and for a sampled process what each of its stretches on
+the path was doing. `--chrome out.json` is the whole run for Perfetto.
+
+The first picture, 5.26 s of wall:
+
+- 2.1 s was the root's own work between phases, and 1.0 s parts sat in a
+  queue -- work and waiting nobody had seen.
+- The root's long stretches were single slices of 200-325 ms: natives that
+  do not yield. They were `vm.share!` -- not the copy into the shared area,
+  which is 20-50 ms, but its deep force of lazy compiler state (the
+  declarations, the checker's tables). So that was compiler work.
+- Declaring the program (`scope.declare!`) ran three times: once for macro
+  expansion's snapshot and once for each of the two resolution walks, which
+  start from the same loader. Now declared once for both walks
+  (`scope.resolve_declared!`). And `lend_shorthands` sorted every library's
+  exports again for each of the program's 143 modules.
+- Lowering was 141 parts averaging 30 ms and one of 870: one large module.
+  `lower.balanced` cuts a part heavier than a 48th of the program into runs
+  of its bodies, which number their functions from the module's offsets and
+  link as parts do; `progress.join_heaviest_first!` starts the heaviest
+  first. The image is byte for byte the one an unbalanced build writes.
+- The root, dealing 200 parts, stalled 270 ms a third of the way through:
+  `spawn!` dealt children round robin over every worker, its own included,
+  and a parent that yields goes behind what is queued on its worker. A
+  child now goes to some other worker.
+- Each part runs as one slice -- inside `vm.share!`'s force -- so a worker
+  queue is run to completion, and there were eight of them on a 24-thread
+  machine: `default_workers` was capped at 8 because an idle worker woke
+  every 500us, which a one-process program paid for. Idle workers now back
+  off to 16 ms, woken through the lock they test the queues under so a wake
+  is never lost, and the default is every usable core. Self-compile: 4.9 s
+  with eight workers, 4.4 s with twenty-four; the benchmarks and a short
+  program are unchanged.
+
+5.37 s to 4.35 s in all, the images unchanged. What is left on the path is
+work: 2.0 s of it the root's, and per phase the largest part. On 24 threads
+the parts' CPU is 30 s -- SMT makes each slower than on 8 -- of which
+parsing is 5.7 s, 47 reductions a byte of source.

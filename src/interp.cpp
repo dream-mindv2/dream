@@ -16,6 +16,7 @@
 
 #include "builtins.hpp"
 #include "jit.hpp"
+#include "scheduler.hpp"
 
 namespace dream {
 
@@ -555,7 +556,7 @@ void enter_function(Process& p, uint32_t func_index, const FuncRec& f, Value fra
             p.total_reductions += own;
             // And attributed, which nothing did before: a function the JIT
             // compiled was invisible to `--profile` however hot it was.
-            if (own && p.runtime().profiling()) p.runtime().note_reductions(func_index, own);
+            if (own && p.runtime().profiling_for(p.id())) p.runtime().note_reductions(func_index, own);
             // A force underneath the compiled body reached a blocking native
             // -- a `receive` inside an impure call that a pure function was
             // handed unevaluated, which is how `agent.value_as!` reaches
@@ -780,8 +781,11 @@ void resume_native(Process& p, Value callee, uint32_t base, uint32_t argc, uint3
     Pin callee_pin(p, pinned ? callee : UNIT);
 
     if (!p.effect_attempts.empty()) effect_check_native(p, callee, p.stack.data() + base, argc);
+    static const bool timed = timeline_on();
+    const int64_t native_start = timed ? timeline_now() : 0;
     NativeResult r = fn(p, callee, p.stack.data() + base, argc);
     if (pinned) callee = callee_pin.get();
+    if (timed && timeline_now() - native_start >= 2000) timeline_native(p, native_name(callee), native_start);
 
     // A nested force inside the native hit a blocking operation and gave up
     // (see `force_whnf`). Whatever the native decided to return is built on a
@@ -3512,7 +3516,7 @@ void run_process(Process& p, int64_t budget) {
     // Profiling never turns on mid-run, so this is a register for the whole
     // loop rather than a load per step. That matters most for the Return run
     // below, which is more than half of all the steps a program takes.
-    const bool prof = p.runtime().profiling();
+    const bool prof = p.runtime().profiling_for(p.id());
     Jit* const work_jit = p.runtime().jit();
     const bool sample_work = work_jit && work_jit->samples_work();
     // `slice_spent` is how a nested force says the budget ran out while it was
@@ -3544,6 +3548,7 @@ void run_process(Process& p, int64_t budget) {
                     const uint64_t a0 = p.heap().bytes_total();
                     const uint64_t n0 = p.alloc_attributed;
                     p.runtime().note_reduction(fi);
+                    if ((p.total_reductions & 1023) == 0 && timeline_on()) timeline_sample(p, fi);
                     step_eval(p);
                     note_own_alloc(p, fi, a0, n0);
                 } else {
@@ -3634,7 +3639,7 @@ bool nested_whnf(Process& p, Value v, const Value* args, uint32_t argc, Value* o
     const size_t max_stack = lim.stack;
     const size_t max_heap = lim.heap_bytes;
     const WellKnownAtoms& wk = well_known(p.runtime());
-    const bool prof = p.runtime().profiling();
+    const bool prof = p.runtime().profiling_for(p.id());
     Jit* const work_jit = p.runtime().jit();
     const bool sample_work = work_jit && work_jit->samples_work();
     const size_t floor = p.conts.size();
@@ -3681,6 +3686,7 @@ bool nested_whnf(Process& p, Value v, const Value* args, uint32_t argc, Value* o
                 const uint64_t a0 = p.heap().bytes_total();
                 const uint64_t n0 = p.alloc_attributed;
                 p.runtime().note_reduction(fi);
+                if ((p.total_reductions & 1023) == 0 && timeline_on()) timeline_sample(p, fi);
                 step_eval(p);
                 note_own_alloc(p, fi, a0, n0);
             } else {
@@ -4005,5 +4011,7 @@ std::string describe(Process& p, Value v) {
     if (!is_ptr(v)) return "a value";
     return std::string("a ") + obj_type_name(as_obj(v)->type);
 }
+
+std::string image_function_name(Process& p, uint32_t fi) { return function_name(p, fi); }
 
 }  // namespace dream

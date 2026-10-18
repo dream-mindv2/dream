@@ -5877,6 +5877,8 @@ struct Jit::Impl {
     std::vector<std::thread> workers;
     unsigned threads = default_jit_threads();
     bool stopping = false;
+    /// How many compile threads are inside LLVM, which cannot be interrupted.
+    std::atomic<int> compiling{0};
     /// CPU the compile threads have spent between them. See `jit_within_budget`.
     std::atomic<int64_t> jit_ns{0};
     const bool force_sync = std::getenv("DREAM_JIT_SYNC") != nullptr;
@@ -5985,6 +5987,8 @@ Jit::Jit(Runtime& rt) : impl_(std::make_unique<Impl>(rt)) {
     threshold_.store(impl_->threshold, std::memory_order_relaxed);
     rt.set_jit(this);
 }
+bool Jit::compiling() const { return impl_->compiling.load(std::memory_order_acquire) > 0; }
+
 Jit::~Jit() {
     // Whatever is still queued is dropped; a compile in progress is finished,
     // because LLVM cannot be interrupted, and then the thread goes.
@@ -6076,7 +6080,9 @@ void Jit::compile_worker() {
         set_idle(!jit_within_budget(impl_->jit_ns.load(std::memory_order_relaxed)));
         const int64_t spent_before = cpu_nanos(self_clock);
 #endif
+        impl_->compiling.fetch_add(1, std::memory_order_acq_rel);
         CompiledFn fn = compile_one(func_index, nullptr);
+        impl_->compiling.fetch_sub(1, std::memory_order_acq_rel);
         if (!fn) {
             std::lock_guard<std::mutex> g(impl_->mutex);
             impl_->rejected.insert(func_index);

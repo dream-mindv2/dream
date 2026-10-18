@@ -381,6 +381,10 @@ std::string installed_only(const std::string& name, const std::string& MINDV2_PA
     return found;
 }
 
+#ifdef DREAM_PROFILE_GENERATE
+extern "C" void __gcov_dump();
+#endif
+
 int dream_main(int argc, char** argv) {
     std::string path, entry;
     std::string dump_jit_fn;
@@ -649,46 +653,64 @@ int dream_main(int argc, char** argv) {
 
     if (workers == 0) workers = Scheduler::default_workers();
 
-    Scheduler sched(rt, workers);
-    rt.mark_run_start();
-    auto root = sched.create_process();
-    prime_entry(*root, rt.image(), func);
-
-    bool clean = sched.run(root);
-
-    // The root's failure first: a run ends when the root fails, with the
-    // processes it started possibly still alive (`Scheduler::finish`), and
-    // that is not a deadlock.
     int status = 0;
-    if (root->failed) {
-        std::string text = describe_failure(*root, root->exit_value);
-        std::fprintf(stderr, "dream: uncaught error: %s\n", text.c_str());
-        status = 1;
-    } else if (!clean) {
-        std::fprintf(stderr,
-                     "dream: deadlock -- every process is waiting for a message that "
-                     "cannot arrive\n");
-        // And who is waiting for what. A deadlock with no names is a report
-        // that a program is stuck, which the person running it already knew;
-        // the useful part is which process is parked on which thing.
-        sched.dump("deadlock");
-        status = 1;
-    }
+    {
+        // A scope of its own, so that the processes are gone before the end.
+        Scheduler sched(rt, workers);
+        rt.mark_run_start();
+        auto root = sched.create_process();
+        prime_entry(*root, rt.image(), func);
 
-    for (const std::string& f : sched.take_failures()) {
-        if (f.rfind("process " + std::to_string(root->id()) + ":", 0) == 0) continue;
-        std::fprintf(stderr, "dream: uncaught error in %s\n", f.c_str());
-        status = 1;
-    }
+        bool clean = sched.run(root);
 
-    rt.print_profile();
-    rt.print_stats();
-    if (stats) {
-        // What the runtime cannot know: how this particular invocation was set
-        // up.
-        // How many functions the JIT took is `print_stats`'s, so that a program
-        // ending in `os.exit!` still reports it.
-        std::fprintf(stderr, "; %u workers, jit %s\n", workers, jit_owner ? "on" : "off");
+        // The root's failure first: a run ends when the root fails, with the
+        // processes it started possibly still alive (`Scheduler::finish`), and
+        // that is not a deadlock.
+        if (root->failed) {
+            std::string text = describe_failure(*root, root->exit_value);
+            std::fprintf(stderr, "dream: uncaught error: %s\n", text.c_str());
+            status = 1;
+        } else if (!clean) {
+            std::fprintf(stderr,
+                         "dream: deadlock -- every process is waiting for a message that "
+                         "cannot arrive\n");
+            // And who is waiting for what. A deadlock with no names is a report
+            // that a program is stuck, which the person running it already knew;
+            // the useful part is which process is parked on which thing.
+            sched.dump("deadlock");
+            status = 1;
+        }
+
+        for (const std::string& f : sched.take_failures()) {
+            if (f.rfind("process " + std::to_string(root->id()) + ":", 0) == 0) continue;
+            std::fprintf(stderr, "dream: uncaught error in %s\n", f.c_str());
+            status = 1;
+        }
+
+        rt.print_profile();
+        rt.print_stats();
+        if (stats) {
+            // What the runtime cannot know: how this particular invocation was set
+            // up.
+            // How many functions the JIT took is `print_stats`'s, so that a program
+            // ending in `os.exit!` still reports it.
+            std::fprintf(stderr, "; %u workers, jit %s\n", workers, jit_owner ? "on" : "off");
+        }
+    }
+    // The processes are gone, and with them what they held (`Scheduler`'s
+    // destructor). What is left is the JIT, whose destructor waits for a
+    // compile in progress -- LLVM cannot be interrupted -- and a short run
+    // whose loop got hot just before it ended waited fifty milliseconds for
+    // code nothing would run. So it ends now, as `os.exit!` does.
+    if (jit_owner && jit_owner->compiling()) {
+#ifdef DREAM_PROFILE_GENERATE
+        __gcov_dump();
+#endif
+        std::fflush(nullptr);
+#ifdef _WIN32
+        TerminateProcess(GetCurrentProcess(), static_cast<UINT>(status));
+#endif
+        std::_Exit(status);
     }
     return status;
 }

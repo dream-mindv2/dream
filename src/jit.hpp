@@ -74,6 +74,9 @@ public:
 
     explicit Jit(Runtime& rt);
     ~Jit();
+    /// Whether a compile thread is inside LLVM now. The destructor waits for
+    /// it, so a run that ends while one is asks not to wait (`dream_main`).
+    bool compiling() const;
     Jit(const Jit&) = delete;
     Jit& operator=(const Jit&) = delete;
 

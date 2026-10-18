@@ -3818,6 +3818,73 @@ NativeResult core_set_lookup(Process& p, Value, Value* args, uint32_t) {
     return NativeResult::ok(is_nil(resolve(cut)) ? FALSE_V : cut);
 }
 
+// A tally is what `count x xs` -- `list.length (list.filter (fn y -> y ==
+// x) xs)`, as `std`'s fusion writes it, a scan that compares each element
+// with `x` -- would find for every `x` at once: each flat element of `xs`
+// mapped to how often it occurs, or `()` when an element is not flat and
+// nothing can be said. The count scans the whole list, forcing every
+// element, so making the tally forces nothing a count would not; a lookup
+// forces the list's first cell, its head and `x` first, in the scan's
+// order, and only then the rest, through the tally.
+
+/// `_tally xs`: each flat element of `xs` to its count, or `()`.
+NativeResult core_tally(Process& p, Value, Value* args, uint32_t) {
+    VouchesForGc vouch(p);
+    const size_t base = p.stack.size();
+    p.stack.push_back(args[0]);
+    p.stack.push_back(p.heap().make_map(0));
+    auto fail = [&]() {
+        if (!p.force_blocked) p.stack.resize(base);
+        return NativeResult::raise(p.result);
+    };
+    for (;;) {
+        Value w;
+        if (!force_whnf(p, p.stack[base], &w)) return fail();
+        if (is_nil(w)) break;
+        if (!is_obj(w, ObjType::Cons)) { p.stack.resize(base); return NativeResult::ok(UNIT); }
+        p.stack[base] = static_cast<ConsObj*>(as_obj(w))->tail;
+        Value h;
+        if (!force_whnf(p, static_cast<ConsObj*>(as_obj(w))->head, &h)) return fail();
+        if (!set_flat(h)) { p.stack.resize(base); return NativeResult::ok(UNIT); }
+        Value had;
+        int64_t n = map_lookup(p, p.stack[base + 1], h, &had) ? fixnum_value(had) : 0;
+        p.stack[base + 1] = map_insert(p, p.stack[base + 1], h, make_fixnum(n + 1));
+    }
+    Value map = p.stack[base + 1];
+    p.stack.resize(base);
+    return NativeResult::ok(map);
+}
+
+/// `_tally_lookup t xs x`: how often `x` occurs in `xs`, `t` being `xs`'s
+/// tally; `()` when the tally cannot say, and the count runs as written.
+NativeResult core_tally_lookup(Process& p, Value, Value* args, uint32_t) {
+    VouchesForGc vouch(p);
+    const size_t base = p.stack.size();
+    p.stack.push_back(args[0]);
+    p.stack.push_back(args[1]);
+    p.stack.push_back(args[2]);
+    auto fail = [&]() {
+        if (!p.force_blocked) p.stack.resize(base);
+        return NativeResult::raise(p.result);
+    };
+    Value w;
+    if (!force_whnf(p, p.stack[base + 1], &w)) return fail();
+    // An empty list: the count is nothing, and `x` is never compared.
+    if (is_nil(w)) { p.stack.resize(base); return NativeResult::ok(make_fixnum(0)); }
+    if (!is_obj(w, ObjType::Cons)) { p.stack.resize(base); return NativeResult::ok(UNIT); }
+    Value h, x, t;
+    if (!force_whnf(p, static_cast<ConsObj*>(as_obj(w))->head, &h)) return fail();
+    if (!force_whnf(p, p.stack[base + 2], &x)) return fail();
+    p.stack[base + 2] = x;
+    if (!set_flat(x)) { p.stack.resize(base); return NativeResult::ok(UNIT); }
+    if (!force_whnf(p, p.stack[base], &t)) return fail();
+    x = p.stack[base + 2];
+    p.stack.resize(base);
+    if (is_unit(t)) return NativeResult::ok(UNIT);
+    Value n;
+    return NativeResult::ok(map_lookup(p, t, x, &n) ? n : make_fixnum(0));
+}
+
 NativeResult core_array_to_list(Process& p, Value, Value* args, uint32_t) {
     Value v = resolve(args[0]);
     if (!is_obj(v, ObjType::Array)) return type_fail(p, "array_to_list needs an array");
@@ -4945,6 +5012,8 @@ const BuiltinDef BUILTINS[] = {
     {"_set_lookup", 2, 0b01, core_set_lookup},
     {"_set_refresh", 2, 0b01, core_set_refresh},
     {"_memo_cells", 2, 0b11, core_memo_cells},
+    {"_tally", 1, 0b1, core_tally},
+    {"_tally_lookup", 3, 0b000, core_tally_lookup},
 };
 
 uint32_t builtin_count() { return uint32_t(sizeof(BUILTINS) / sizeof(BUILTINS[0])); }

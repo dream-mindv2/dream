@@ -4117,10 +4117,21 @@ NativeResult core_set_lookup(Process& p, Value, Value* args, uint32_t) {
     if (set_field(s0, SET_BROKEN) == TRUE_V) return NativeResult::ok(UNIT);
     // Nothing added and nothing found along the list: no element seen.
     bool empty = fixnum_value(set_field(s0, SET_HI)) == 1 && fixnum_value(set_field(s0, SET_LO)) == 0;
+    // The rest of the list, for the scan to go on with, evaluated to its
+    // first cell: the scan's own next step forces exactly that, and what
+    // reads this answer tells a list from a boolean with `type_is`, which a
+    // suspension is neither of.
+    auto rest_of = [&p](Value cut, Value* out) -> bool {
+        Value w;
+        if (!force_whnf(p, cut, &w)) return false;
+        *out = is_nil(w) ? FALSE_V : w;
+        return true;
+    };
     if (empty) {
         // Nothing seen to compare with: the scan goes on, or there is none.
-        Value cut = set_field(s0, SET_CUT);
-        return NativeResult::ok(is_nil(resolve(cut)) ? FALSE_V : cut);
+        Value out;
+        if (!rest_of(set_field(s0, SET_CUT), &out)) return NativeResult::raise(p.result);
+        return NativeResult::ok(out);
     }
     const size_t base = p.stack.size();
     p.stack.push_back(s0);
@@ -4157,7 +4168,9 @@ NativeResult core_set_lookup(Process& p, Value, Value* args, uint32_t) {
     Value cut = set_field(p.stack[base], SET_CUT);
     p.stack.resize(base);
     if (hit) return NativeResult::ok(TRUE_V);
-    return NativeResult::ok(is_nil(resolve(cut)) ? FALSE_V : cut);
+    Value out;
+    if (!rest_of(cut, &out)) return NativeResult::raise(p.result);
+    return NativeResult::ok(out);
 }
 
 // A tally is what `count x xs` -- `list.length (list.filter (fn y -> y ==

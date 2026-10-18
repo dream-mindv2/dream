@@ -3617,98 +3617,143 @@ static bool flat_equal(Value a, Value b) {
 
 // A membership set is what `list.contains x xs` would find, kept so that a
 // lookup answers exactly what the scan would -- the same answer, with the
-// same elements forced -- or says it cannot. `#[map, count, pending,
-// broken]`: each flat element hashed to its position in the scan, counted so
-// that a later element (scanned earlier: the list is consed onto) has a
-// larger one; the elements that were not yet evaluated when they came, as
-// `#[position, value]`, newest first, for a lookup to force when the scan
-// would have reached them; and whether anything makes the set unable to say
-// at all (a cell of the list not yet evaluated, an element that is not flat).
+// same elements forced -- or says how much of the scan is left to do.
+//
+// `#[map, hi, lo, pending, broken, cut]`. Every element has a position in
+// the scan, larger for one scanned earlier: one consed onto the front takes
+// `hi` and counts it up, one found further along the list takes `lo` and
+// counts it down. `map` hashes each flat element to the largest position it
+// has; `pending` holds the elements not yet evaluated when they came, as
+// `#[position, value]`, newest first; `cut` is the first cell of the list not
+// yet looked at, `NIL` once there is none; `broken` says an element is not
+// flat, and nothing can be said at all.
 
-static Value make_set(Process& p, Value map, int64_t count, Value pending, bool broken) {
-    Value arr = p.heap().make_array(4);
+enum { SET_MAP, SET_HI, SET_LO, SET_PENDING, SET_BROKEN, SET_CUT, SET_SIZE };
+
+static Value set_field(Value s, int i) { return static_cast<ArrayObj*>(as_obj(s))->items()[i]; }
+
+static Value make_set(Process& p, Value map, int64_t hi, int64_t lo, Value pending, bool broken, Value cut) {
+    Value arr = p.heap().make_array(SET_SIZE);
     auto* a = static_cast<ArrayObj*>(as_obj(arr));
-    a->items()[0] = map;
-    a->items()[1] = make_fixnum(count);
-    a->items()[2] = pending;
-    a->items()[3] = make_bool(broken);
+    a->items()[SET_MAP] = map;
+    a->items()[SET_HI] = make_fixnum(hi);
+    a->items()[SET_LO] = make_fixnum(lo);
+    a->items()[SET_PENDING] = pending;
+    a->items()[SET_BROKEN] = make_bool(broken);
+    a->items()[SET_CUT] = cut;
     return arr;
 }
 
-static Value broken_set(Process& p) { return make_set(p, p.heap().make_map(0), 0, NIL, true); }
+static Value broken_set(Process& p) { return make_set(p, p.heap().make_map(0), 1, 0, NIL, true, NIL); }
 
-/// `_set_of xs`: the set of a list. Only what is evaluated is looked at: a
-/// cell not yet evaluated breaks it -- its length is not known -- and an
-/// element not yet evaluated is pending. `xs` itself the first `contains`
-/// would have forced.
-NativeResult core_set_of(Process& p, Value, Value* args, uint32_t) {
-    int64_t n = 0;
-    for (Value cur = resolve(args[0]);; ++n) {
-        if (!is_whnf(cur) || (!is_nil(cur) && !is_obj(cur, ObjType::Cons))) return NativeResult::ok(broken_set(p));
-        if (is_nil(cur)) break;
-        cur = resolve(static_cast<ConsObj*>(as_obj(cur))->tail);
+static Value pending_pair(Process& p, int64_t at, Value v) {
+    Value pair = p.heap().make_array(2);
+    static_cast<ArrayObj*>(as_obj(pair))->items()[0] = make_fixnum(at);
+    static_cast<ArrayObj*>(as_obj(pair))->items()[1] = v;
+    return pair;
+}
+
+/// Hash `h` at position `at`, unless it is there at a later one already.
+static Value hash_at(Process& p, Value map, Value h, int64_t at) {
+    Value had;
+    if (map_lookup(p, map, h, &had) && fixnum_value(had) >= at) return map;
+    return map_insert(p, map, h, make_fixnum(at));
+}
+
+/// The set with everything that has been evaluated since taken in: the cells
+/// past `cut` that are evaluated now, and the pending elements that are. No
+/// value is forced. Nothing here is a safepoint: the walk allocates, and does
+/// not evaluate.
+static Value settle_set(Process& p, Value s) {
+    if (set_field(s, SET_BROKEN) == TRUE_V) return s;
+    Value map = set_field(s, SET_MAP);
+    int64_t lo = fixnum_value(set_field(s, SET_LO));
+    // Pending elements now evaluated are hashed; the rest stay, newest first.
+    Value kept_rev = NIL;
+    bool changed = false;
+    for (Value q = set_field(s, SET_PENDING); !is_nil(q); q = static_cast<ConsObj*>(as_obj(q))->tail) {
+        Value pair = static_cast<ConsObj*>(as_obj(q))->head;
+        auto* pr = static_cast<ArrayObj*>(as_obj(pair));
+        Value v = resolve(pr->items()[1]);
+        if (!is_whnf(v)) { kept_rev = p.heap().make_cons(pair, kept_rev); continue; }
+        if (!set_flat(v)) return broken_set(p);
+        map = hash_at(p, map, v, fixnum_value(pr->items()[0]));
+        changed = true;
     }
-    // The first element is scanned first, so it has the largest position.
-    Value map = p.heap().make_map(0);
-    Value pending = NIL;
-    Value cur = resolve(args[0]);
-    for (int64_t i = 0; i < n; ++i) {
-        auto* c = static_cast<ConsObj*>(as_obj(cur));
+    // The cells past the cut that have been evaluated, each further along
+    // than everything before it.
+    Value cut = resolve(set_field(s, SET_CUT));
+    while (!is_nil(cut) && is_whnf(cut)) {
+        if (!is_obj(cut, ObjType::Cons)) return broken_set(p);
+        auto* c = static_cast<ConsObj*>(as_obj(cut));
         Value h = resolve(c->head);
         Value next = c->tail;
-        int64_t at = n - 1 - i;
         if (!is_whnf(h)) {
-            Value pair = p.heap().make_array(2);
-            static_cast<ArrayObj*>(as_obj(pair))->items()[0] = make_fixnum(at);
-            static_cast<ArrayObj*>(as_obj(pair))->items()[1] = c->head;
-            pending = p.heap().make_cons(pair, pending);
+            // Oldest of all, so last: the pending list keeps newest first.
+            kept_rev = p.heap().make_cons(pending_pair(p, lo, c->head), kept_rev);
         } else if (!set_flat(h)) {
-            return NativeResult::ok(broken_set(p));
+            return broken_set(p);
         } else {
-            Value had;
-            if (!map_lookup(p, map, h, &had)) map = map_insert(p, map, h, make_fixnum(at));
+            map = hash_at(p, map, h, lo);
         }
-        cur = resolve(next);
+        --lo;
+        changed = true;
+        cut = resolve(next);
     }
-    // `pending` was built oldest first; a lookup wants it newest first.
-    Value rev = NIL;
-    for (Value q = pending; !is_nil(q); q = static_cast<ConsObj*>(as_obj(q))->tail) {
-        rev = p.heap().make_cons(static_cast<ConsObj*>(as_obj(q))->head, rev);
+    if (!changed) return s;
+    Value pending = NIL;
+    for (Value q = kept_rev; !is_nil(q); q = static_cast<ConsObj*>(as_obj(q))->tail) {
+        pending = p.heap().make_cons(static_cast<ConsObj*>(as_obj(q))->head, pending);
     }
-    return NativeResult::ok(make_set(p, map, n, rev, false));
+    return make_set(p, map, fixnum_value(set_field(s, SET_HI)), lo, pending, false, cut);
+}
+
+/// `_set_of xs`: the set of a list, as much of it as is evaluated.
+NativeResult core_set_of(Process& p, Value, Value* args, uint32_t) {
+    return NativeResult::ok(settle_set(p, make_set(p, p.heap().make_map(0), 1, 0, NIL, false, args[0])));
 }
 
 /// `_set_add s e`: the set of `e :: xs`. Nothing is forced: an `e` not yet
 /// evaluated is pending until a scan would reach it.
 NativeResult core_set_add(Process& p, Value, Value* args, uint32_t) {
-    auto* a = static_cast<ArrayObj*>(as_obj(resolve(args[0])));
-    if (a->items()[3] == TRUE_V) return NativeResult::ok(resolve(args[0]));
-    Value map = a->items()[0];
-    int64_t at = fixnum_value(a->items()[1]);
-    Value pending = a->items()[2];
+    Value s = resolve(args[0]);
+    if (set_field(s, SET_BROKEN) == TRUE_V) return NativeResult::ok(s);
+    int64_t hi = fixnum_value(set_field(s, SET_HI));
     Value e = resolve(args[1]);
-    if (!is_whnf(e)) {
-        Value pair = p.heap().make_array(2);
-        static_cast<ArrayObj*>(as_obj(pair))->items()[0] = make_fixnum(at);
-        static_cast<ArrayObj*>(as_obj(pair))->items()[1] = args[1];
-        return NativeResult::ok(make_set(p, map, at + 1, p.heap().make_cons(pair, pending), false));
-    }
-    if (!set_flat(e)) return NativeResult::ok(broken_set(p));
-    return NativeResult::ok(make_set(p, map_insert(p, map, e, make_fixnum(at)), at + 1, pending, false));
+    Value map = set_field(s, SET_MAP);
+    Value pending = set_field(s, SET_PENDING);
+    if (!is_whnf(e)) pending = p.heap().make_cons(pending_pair(p, hi, args[1]), pending);
+    else if (!set_flat(e)) return NativeResult::ok(broken_set(p));
+    else map = map_insert(p, map, e, make_fixnum(hi));
+    return NativeResult::ok(make_set(p, map, hi + 1, fixnum_value(set_field(s, SET_LO)), pending, false, set_field(s, SET_CUT)));
+}
+
+/// `_set_refresh s xs`: `s` with what has been evaluated since taken in. The
+/// scans a set stands in for evaluate the list as they run, so a set that
+/// could only say part at first says more each time.
+NativeResult core_set_refresh(Process& p, Value, Value* args, uint32_t) {
+    return NativeResult::ok(settle_set(p, resolve(args[0])));
 }
 
 /// `_set_lookup s x`: what `list.contains x xs` answers, forcing what its scan
 /// would force -- `x`, when there is anything to compare it with, and each
-/// pending element the scan reaches before it finds `x` -- or `()` when the
-/// set cannot say, for the caller to ask the list.
+/// pending element the scan reaches before it finds `x`. When the scan would
+/// go on past what the set has seen, the rest of the list, for the caller to
+/// scan; `()` when the set cannot say at all.
 NativeResult core_set_lookup(Process& p, Value, Value* args, uint32_t) {
     VouchesForGc vouch(p);
+    Value s0 = resolve(args[0]);
+    if (set_field(s0, SET_BROKEN) == TRUE_V) return NativeResult::ok(UNIT);
+    // Nothing added and nothing found along the list: no element seen.
+    bool empty = fixnum_value(set_field(s0, SET_HI)) == 1 && fixnum_value(set_field(s0, SET_LO)) == 0;
+    if (empty) {
+        // Nothing seen to compare with: the scan goes on, or there is none.
+        Value cut = set_field(s0, SET_CUT);
+        return NativeResult::ok(is_nil(resolve(cut)) ? FALSE_V : cut);
+    }
     const size_t base = p.stack.size();
-    p.stack.push_back(resolve(args[0]));
+    p.stack.push_back(s0);
     p.stack.push_back(args[1]);
-    auto set = [&]() { return static_cast<ArrayObj*>(as_obj(p.stack[base])); };
-    if (set()->items()[3] == TRUE_V) { p.stack.resize(base); return NativeResult::ok(UNIT); }
-    if (fixnum_value(set()->items()[1]) == 0) { p.stack.resize(base); return NativeResult::ok(FALSE_V); }
     Value x;
     if (!force_whnf(p, p.stack[base + 1], &x)) {
         if (!p.force_blocked) p.stack.resize(base);
@@ -3717,15 +3762,16 @@ NativeResult core_set_lookup(Process& p, Value, Value* args, uint32_t) {
     if (!set_flat(x)) { p.stack.resize(base); return NativeResult::ok(UNIT); }
     p.stack[base + 1] = x;
     Value found;
-    int64_t hit = map_lookup(p, set()->items()[0], x, &found) ? fixnum_value(found) : -1;
-    // Each pending element the scan reaches before the hit -- a later one --
-    // forced and compared, newest first.
-    p.stack.push_back(set()->items()[2]);
+    bool hit = map_lookup(p, set_field(p.stack[base], SET_MAP), x, &found);
+    int64_t at = hit ? fixnum_value(found) : INT64_MIN;
+    // Each pending element the scan reaches before the hit, forced and
+    // compared, newest first.
+    p.stack.push_back(set_field(p.stack[base], SET_PENDING));
     for (;;) {
         Value q = p.stack[base + 2];
         if (is_nil(q)) break;
         auto* pair = static_cast<ArrayObj*>(as_obj(static_cast<ConsObj*>(as_obj(q))->head));
-        if (fixnum_value(pair->items()[0]) < hit) break;
+        if (fixnum_value(pair->items()[0]) < at) break;
         p.stack.push_back(pair->items()[1]);
         Value w;
         if (!force_whnf(p, p.stack.back(), &w)) {
@@ -3737,8 +3783,10 @@ NativeResult core_set_lookup(Process& p, Value, Value* args, uint32_t) {
         if (flat_equal(w, p.stack[base + 1])) { p.stack.resize(base); return NativeResult::ok(TRUE_V); }
         p.stack[base + 2] = static_cast<ConsObj*>(as_obj(p.stack[base + 2]))->tail;
     }
+    Value cut = set_field(p.stack[base], SET_CUT);
     p.stack.resize(base);
-    return NativeResult::ok(make_bool(hit >= 0));
+    if (hit) return NativeResult::ok(TRUE_V);
+    return NativeResult::ok(is_nil(resolve(cut)) ? FALSE_V : cut);
 }
 
 NativeResult core_array_to_list(Process& p, Value, Value* args, uint32_t) {
@@ -4866,6 +4914,7 @@ const BuiltinDef BUILTINS[] = {
     {"_set_of", 1, 0b1, core_set_of},
     {"_set_add", 2, 0b01, core_set_add},
     {"_set_lookup", 2, 0b01, core_set_lookup},
+    {"_set_refresh", 2, 0b01, core_set_refresh},
 };
 
 uint32_t builtin_count() { return uint32_t(sizeof(BUILTINS) / sizeof(BUILTINS[0])); }

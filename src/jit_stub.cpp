@@ -10,6 +10,7 @@ struct Jit::Impl {};
 bool Jit::available() { return false; }
 Jit::Jit(Runtime&) : impl_(nullptr) {}
 Jit::~Jit() = default;
+bool Jit::compiling() const { return false; }
 CompiledFn Jit::on_enter(uint32_t) { return nullptr; }
 void Jit::deoptimize(uint32_t) {}
 CompiledFn Jit::compile_one(uint32_t, std::string* error) {

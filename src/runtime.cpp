@@ -46,9 +46,9 @@ Runtime::Runtime(bool owns_host_services)
         "integer", "float",  "char",   "bool",   "unit",    "string",
         "atom",    "list",   "array",  "map",    "pure_fn", "impure_fn",
         "module",  "error",  "process", "unknown", "bigstr",  "tensor",
-        "record",
+        "record",  "trunk",
     };
-    static_assert(std::size(kTypeNames) == DREAM_TYPE_RECORD + 1,
+    static_assert(std::size(kTypeNames) == DREAM_TYPE_TRUNK + 1,
                   "every surface type needs a name");
     for (size_t i = 0; i < std::size(kTypeNames); ++i) {
         wk_->types[i] = intern_atom(kTypeNames[i]);
@@ -178,6 +178,7 @@ void Runtime::mark_run_start() {
 void Runtime::print_stats() const {
     dbg_dump_thunks();
     if (!stats_) return;
+    print_trunk_stats();
     uint64_t reductions = scheduler_ ? scheduler_->total_reductions() : 0;
     uint64_t major = 0, minor = 0, promoted = 0, allocated = 0;
     uint64_t minor_ns = 0, major_ns = 0, rounds = 0;

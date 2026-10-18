@@ -187,6 +187,14 @@ std::string record_shown_name(Process& p, Value v);
 
 /// A short, non-forcing description, for error messages.
 std::string describe(Process& p, Value v);
+/// `==`, as the language decides it: forces as it descends. False with
+/// `*raised` set when a force raised.
+bool equal_values(Process& p, Value a, Value b, bool* raised, int depth);
+/// A trunk's `==`, length and then element by element (trunk.cpp).
+bool trunk_equal(Process& p, Value a, Value b, bool* raised, int depth);
+/// A trunk's length, and its `i`th element counted from 0, unevaluated.
+uint32_t trunk_length(Value c);
+Value trunk_element(Value c, uint32_t i);
 /// The name the image gives function `fi`.
 std::string image_function_name(Process& p, uint32_t fi);
 

@@ -61,6 +61,10 @@ void append_shortest(double d, bool f32, std::string* out);
 /// `map` with `key` set to `value`. The map handed in is unchanged and stays
 /// valid: what comes back shares all of it but the path to the new entry.
 Value map_insert(Process& p, Value map, Value key, Value value);
+/// `std.trunk`'s natives, added to `std.vm`'s members (trunk.cpp).
+void add_trunk_natives(std::vector<NativeDef>& members);
+/// What `--stats` says trunks did, if any were made.
+void print_trunk_stats();
 /// `map` with `n` keys set, in order, a later one winning: what a run of
 /// `map_insert`s answers, with each branch on the way copied once rather than
 /// once per key. `pairs` is `k0, v0, k1, v1, ..`. `SetMany` on a map is this.

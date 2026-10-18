@@ -393,8 +393,19 @@ int dream_rt_get(Process* p, Value c, Value k, int32_t has_default, Value* out) 
         *out = rt_out_of_bounds(*p, "field " + std::to_string(i) + " is outside " + describe(*p, c));
         return 0;
     }
+    if (is_obj(c, ObjType::Trunk) && is_fixnum(k)) {
+        const int64_t i = fixnum_value(k);
+        if (i >= 0 && i < int64_t(trunk_length(c))) {
+            *out = trunk_element(c, uint32_t(i));
+            return 1;
+        }
+        if (has_default) return 2;
+        *out = rt_out_of_bounds(*p, "index " + std::to_string(i) + " is outside a trunk of " +
+                                        std::to_string(trunk_length(c)));
+        return 0;
+    }
     if (!is_sequence_value(c)) {
-        *out = rt_type_error(*p, "`.[ ]` reads a map, an array or a list, not " +
+        *out = rt_type_error(*p, "`.[ ]` reads a map, an array, a list or a trunk, not " +
                                      describe(*p, c));
         return 0;
     }

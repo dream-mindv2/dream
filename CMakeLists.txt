@@ -746,6 +746,7 @@ set(DREAM_SOURCES
   src/process.cpp
   src/interp.cpp
   src/builtins.cpp
+  src/trunk.cpp
   src/ffi.cpp
   src/io.cpp
   src/digest.cpp

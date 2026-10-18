@@ -156,6 +156,12 @@ public:
     Value make_array(uint32_t len);
     /// A record of `len` fields, left for the caller to fill; see RecordObj.
     Value make_record(uint32_t tag, uint32_t len);
+    /// A trunk's store of `cap` slots, every one `UNIT`, slot `i` at
+    /// `i - base`, with nothing written and no index; see TrunkStoreObj.
+    Value make_trunk_store(uint32_t base, uint32_t cap);
+    /// A version of a trunk: `[start, end)` of `link`, the root when
+    /// `link` is a store. See TrunkObj.
+    Value make_trunk(Value link, uint32_t start, uint32_t end);
     /// An empty map: a branch with no children. The capacity argument is a
     /// leftover of the open-addressed table and is ignored -- a trie sizes
     /// itself -- but it is kept so that callers with a sensible hint need not
@@ -370,6 +376,26 @@ public:
              GC_YOUNG))
             remembered_.push_back(dst);
         if (marking_ && (dgc & GC_MARK)) log_mutation(dst);
+    }
+
+    /// `remember_if_old` for an object written over and over between
+    /// collections -- a trunk's store, which a loop writes once per turn.
+    /// The remembered set keeps one entry per store, so an old object written
+    /// n times was scanned n times by the next minor collection: a store of
+    /// 130,000 slots made every minor take 13 ms. `stamp` is the object's
+    /// note of the collection it was last remembered after; the set is
+    /// emptied exactly when `collections_` moves, so while they agree it is
+    /// in the set already. A running mark still hears of every write.
+    void remember_once(Obj* dst, Value value, uint64_t* stamp) {
+        if (*stamp != collections_) {
+            const size_t before = remembered_.size();
+            remember_if_old(dst, value);
+            if (remembered_.size() != before) *stamp = collections_;
+            return;
+        }
+        if (marking_ && (std::atomic_ref<uint8_t>(dst->gc).load(std::memory_order_acquire) & GC_MARK)) {
+            log_mutation(dst);
+        }
     }
 
     size_t bytes_allocated() const { return allocated_; }
@@ -1026,6 +1052,12 @@ public:
     Value make_array(uint32_t len);
     /// A record of `len` fields, left for the caller to fill; see RecordObj.
     Value make_record(uint32_t tag, uint32_t len);
+    /// A trunk's store of `cap` slots, every one `UNIT`, slot `i` at
+    /// `i - base`, with nothing written and no index; see TrunkStoreObj.
+    Value make_trunk_store(uint32_t base, uint32_t cap);
+    /// A version of a trunk: `[start, end)` of `link`, the root when
+    /// `link` is a store. See TrunkObj.
+    Value make_trunk(Value link, uint32_t start, uint32_t end);
     Value make_map_branch(uint32_t nslots);
     Value make_map_leaf(uint64_t hash, Value key, Value value, Value next);
     Value make_error(Value kind, Value payload, Value where = UNIT);

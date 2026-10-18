@@ -431,7 +431,7 @@ struct WellKnownAtoms {
     /// The name `type_of` answers for each surface type, indexed by
     /// `dream_type`. `DREAM_TYPE_PURE_FN` is the pure one; an impure function
     /// reports `impure_fn`, which is the entry after it.
-    uint32_t types[DREAM_TYPE_RECORD + 1];
+    uint32_t types[DREAM_TYPE_TRUNK + 1];
     /// The prelude's `Result.ok` and `Result.error` (`std.prelude`): the
     /// ids of the records the runtime itself answers a result with -- the
     /// outcome in a `[:down, p, outcome]` -- written as the compiler stamps

@@ -113,6 +113,8 @@ enum class ObjType : uint8_t {
     Tensor,    // packed numbers with a shape; see TensorObj
     BigInt,    // an integer too large for a fixnum; see BigIntObj
     Record,    // a value of a declared record or union; see RecordObj
+    Trunk,      // a version of a trunk; see TrunkObj
+    TrunkStore, // the slots and indexes a trunk's versions share
     Count
 };
 
@@ -251,6 +253,85 @@ inline constexpr uint32_t RECORD_VARIANT = 1u << 31;
 /// The header word for the atom `id`, a union's variant when `variant`.
 inline uint32_t record_tag(Value id, bool variant) {
     return uint32_t(imm_payload(id)) | (variant ? RECORD_VARIANT : 0);
+}
+
+/// A trunk: `std.trunk`'s one container, whose meaning is always an
+/// immutable sequence and whose representation the VM chooses from what the
+/// program does with it. See "Trunks" in docs/notes/trunks.md.
+///
+/// Every version of a trunk made from another shares one store of slots
+/// with it, addressed by positions that never change -- they start at
+/// `TRUNK_ORIGIN` and grow both ways, so a push and a prepend each write the
+/// next free slot. Exactly one version per store is its root and reads the
+/// slots directly. Any other was the root once: when the root writes a slot,
+/// or a newer version is made from it, it becomes a version "like `link`,
+/// except that slot `pos` holds `value`", which is Baker's version tree, the
+/// scheme behind diff arrays. So linear use -- each version used once to make
+/// the next, which is most functional code -- writes in place, and an old
+/// version still reads exactly what it held, through its chain. A write from a
+/// version that is not the root copies, as a persistent structure must.
+struct TrunkObj : Obj {
+    uint32_t start;
+    uint32_t end;
+    /// The store, for the root; the next newer version, for any other.
+    Value link;
+    /// A version that is not the root: the one slot it holds a value of its
+    /// own for, or `TRUNK_NO_POS`.
+    uint32_t pos;
+    uint32_t pad;
+    Value value;
+};
+
+/// What `TrunkObj::pos` is when a version differs from the next only in its
+/// bounds.
+inline constexpr uint32_t TRUNK_NO_POS = 0xffffffffu;
+/// Where the first element of a new trunk goes: the middle of the
+/// position space, so there is as much room to prepend as to push.
+inline constexpr uint32_t TRUNK_ORIGIN = 1u << 31;
+
+/// The slots a trunk's versions share, and what is known about them.
+///
+/// Slot `i` is `slots()[i - base]`; `[lo, hi)` is every slot ever written.
+/// `index` maps each flat element to the positions holding it, newest first,
+/// for `contains`, `index_of` and `count`; `keyed` maps the flat first item
+/// of each element that is a list -- an association list's key -- to its
+/// positions, for `lookup` and `put`. Each covers only `[ilo, ihi)` (and
+/// `[klo, khi)`), positions whose elements a scan had already forced, so a
+/// search answered from an index forces nothing the scan as written would
+/// not have. They are made once scanning has cost as much as the trunk
+/// is long (`work`), and are the root's: they describe the slots as they are.
+struct TrunkStoreObj : Obj {
+    uint32_t base;
+    uint32_t cap;
+    uint32_t lo;
+    uint32_t hi;
+    uint32_t ilo;
+    uint32_t ihi;
+    uint32_t klo;
+    uint32_t khi;
+    uint64_t work;
+    /// The collection count it was last put in its heap's remembered set
+    /// after (`Heap::remember_once`).
+    uint64_t remembered;
+    Value index;
+    Value keyed;
+    Value* slots() { return reinterpret_cast<Value*>(this + 1); }
+};
+
+/// The element at position `i` of version `o`: the first value its chain
+/// holds for `i` on the way to the root, else the root's slot. Changes
+/// nothing, so it is safe on an object of another heap or of the shared area.
+inline Value trunk_read(Obj* o, uint32_t i) {
+    auto* c = static_cast<TrunkObj*>(o);
+    for (;;) {
+        Obj* link = reinterpret_cast<Obj*>(c->link);
+        if (link->type == ObjType::TrunkStore) {
+            auto* st = static_cast<TrunkStoreObj*>(link);
+            return st->slots()[i - st->base];
+        }
+        if (c->pos == i) return c->value;
+        c = static_cast<TrunkObj*>(link);
+    }
 }
 
 /// A persistent map: a hash array mapped trie. Keys are forced (we have to hash

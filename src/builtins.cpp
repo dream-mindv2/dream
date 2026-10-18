@@ -600,6 +600,22 @@ bool stringify_into(Process& p, Value v, std::string* out, bool quoted, int dept
             out->push_back(']');
             return true;
         }
+        case ObjType::Trunk: {
+            // `trunk[1, 2, 3]`: a sequence, said to be a trunk.
+            out->append("trunk[");
+            p.stack.push_back(w);
+            uint32_t len = trunk_length(w);
+            for (uint32_t i = 0; i < len; ++i) {
+                if (i) out->append(", ");
+                if (!stringify_into(p, trunk_element(p.stack.back(), i), out, true, depth + 1)) {
+                    p.stack.pop_back();
+                    return false;
+                }
+            }
+            p.stack.pop_back();
+            out->push_back(']');
+            return true;
+        }
         case ObjType::Record: {
             // `Shape.circle(1.0)`, `Shape.empty`, `Point(3, 4)`: the
             // declaration's name, then the fields in the order they were
@@ -935,7 +951,7 @@ NativeResult bi_type_of(Process& p, Value, Value* args, uint32_t) {
     if (t == DREAM_TYPE_RECORD) {
         return NativeResult::ok(make_atom(p.runtime().intern_atom(record_type_name(p, args[0]))));
     }
-    if (unsigned(t) > unsigned(DREAM_TYPE_RECORD)) t = DREAM_TYPE_UNKNOWN;
+    if (unsigned(t) > unsigned(DREAM_TYPE_TRUNK)) t = DREAM_TYPE_UNKNOWN;
     return NativeResult::ok(make_atom(wk.types[t]));
 }
 
@@ -1003,6 +1019,8 @@ NativeResult bi_len(Process& p, Value, Value* args, uint32_t) {
         n = static_cast<ArrayObj*>(as_obj(v))->len;
     } else if (is_obj(v, ObjType::Record)) {
         n = static_cast<RecordObj*>(as_obj(v))->len;
+    } else if (is_obj(v, ObjType::Trunk)) {
+        n = trunk_length(v);
     } else if (is_obj(v, ObjType::Map)) {
         n = static_cast<MapObj*>(as_obj(v))->count;
     } else if (is_obj(v, ObjType::Tensor)) {
@@ -1797,7 +1815,7 @@ NativeResult vm_wire_decode(Process& p, Value self, Value* args, uint32_t n);
 }  // namespace
 
 ModuleDef make_vm_module() {
-    return ModuleDef{"std.vm",
+    ModuleDef def{"std.vm",
                      {
                          {"processes!", 1, 0b1, vm_processes},
                          {"reductions!", 1, 0b1, vm_reductions},
@@ -1852,6 +1870,9 @@ ModuleDef make_vm_module() {
                          {"peak_bytes!", 1, 0b1, vm_peak_bytes},
                          {"stats!", 1, 0b1, vm_stats},
                      }};
+    // `std.trunk`'s trunks; see trunk.cpp.
+    add_trunk_natives(def.members);
+    return def;
 }
 
 ModuleDef make_math_module() {

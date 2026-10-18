@@ -13,5 +13,5 @@ infinite:   [101, 0]
 missing:    <error :no_such_key the map has no key :colour>
 outside:    <error :out_of_bounds index 3 is outside an array of 3>
 past end:   <error :out_of_bounds index 3 is past the end of a list of 3>
-not one:    <error :type_error `.[ ]` reads a map, an array or a list, not a string>
+not one:    <error :type_error `.[ ]` reads a map, an array, a list or a trunk, not a string>
 deep chain: 300000

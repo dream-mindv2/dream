@@ -537,6 +537,50 @@ Value Heap::make_record(uint32_t tag, uint32_t len) {
     return from_obj(o);
 }
 
+// A trunk. The store's slots are all set, to `UNIT` where nothing has
+// been written, because the collector reads every one of them: a slot the
+// trace met uninitialised would be garbage it followed.
+static Value init_trunk_store(Obj* raw, uint32_t base, uint32_t cap) {
+    auto* o = static_cast<TrunkStoreObj*>(raw);
+    o->base = base;
+    o->cap = cap;
+    o->lo = o->hi = base + cap / 2;
+    o->ilo = o->ihi = o->klo = o->khi = o->lo;
+    o->work = 0;
+    o->remembered = UINT64_MAX;
+    o->index = UNIT;
+    o->keyed = UNIT;
+    for (uint32_t i = 0; i < cap; ++i) o->slots()[i] = UNIT;
+    return from_obj(o);
+}
+
+static Value init_trunk(Obj* raw, Value link, uint32_t start, uint32_t end) {
+    auto* o = static_cast<TrunkObj*>(raw);
+    o->start = start;
+    o->end = end;
+    o->link = link;
+    o->pos = TRUNK_NO_POS;
+    o->pad = 0;
+    o->value = UNIT;
+    return from_obj(o);
+}
+
+static constexpr size_t kTrunkStoreExtra = sizeof(TrunkStoreObj) - sizeof(Obj);
+static constexpr size_t kTrunkExtra = sizeof(TrunkObj) - sizeof(Obj);
+
+Value Heap::make_trunk_store(uint32_t base, uint32_t cap) {
+    return init_trunk_store(alloc(ObjType::TrunkStore, kTrunkStoreExtra + size_t(cap) * sizeof(Value)), base, cap);
+}
+Value Heap::make_trunk(Value link, uint32_t start, uint32_t end) {
+    return init_trunk(alloc(ObjType::Trunk, kTrunkExtra), link, start, end);
+}
+Value SharedArea::make_trunk_store(uint32_t base, uint32_t cap) {
+    return init_trunk_store(alloc(ObjType::TrunkStore, kTrunkStoreExtra + size_t(cap) * sizeof(Value)), base, cap);
+}
+Value SharedArea::make_trunk(Value link, uint32_t start, uint32_t end) {
+    return init_trunk(alloc(ObjType::Trunk, kTrunkExtra), link, start, end);
+}
+
 Value Heap::make_map(uint32_t) {
     return make_map_branch(0);
 }
@@ -1303,6 +1347,22 @@ inline void for_each_slot(Obj* o, ObjType type, F&& visit) {
             // The id is an atom, an immediate, so the fields are all of it.
             auto* r = static_cast<RecordObj*>(o);
             for (uint32_t i = 0; i < r->len; ++i) visit(&r->items()[i]);
+            break;
+        }
+        case ObjType::Trunk: {
+            auto* c = static_cast<TrunkObj*>(o);
+            visit(&c->link);
+            visit(&c->value);
+            break;
+        }
+        case ObjType::TrunkStore: {
+            // Every slot, written or not: the unwritten ones are `UNIT`, and
+            // reading `cap` rather than `[lo, hi)` means a mark running beside
+            // a push never reads a bound mid-change.
+            auto* st = static_cast<TrunkStoreObj*>(o);
+            visit(&st->index);
+            visit(&st->keyed);
+            for (uint32_t i = 0; i < st->cap; ++i) visit(&st->slots()[i]);
             break;
         }
         case ObjType::Map: {
@@ -2805,6 +2865,28 @@ struct VerifyWalk {
                     for (uint32_t i = 0; i < r->len; ++i) push(r->items()[i], v);
                     break;
                 }
+                case ObjType::Trunk: {
+                    auto* c = static_cast<TrunkObj*>(o);
+                    if (c->bytes < sizeof(TrunkObj) || c->start > c->end) {
+                        problem("trunk at " + addr(o) + " is too small or ends before it starts");
+                        return;
+                    }
+                    push(c->link, v);
+                    push(c->value, v);
+                    break;
+                }
+                case ObjType::TrunkStore: {
+                    auto* st = static_cast<TrunkStoreObj*>(o);
+                    if (st->bytes < sizeof(TrunkStoreObj) + size_t(st->cap) * sizeof(Value) ||
+                        st->lo > st->hi || st->lo < st->base || st->hi - st->base > st->cap) {
+                        problem("trunk store at " + addr(o) + " has slots outside it");
+                        return;
+                    }
+                    push(st->index, v);
+                    push(st->keyed, v);
+                    for (uint32_t i = 0; i < st->cap; ++i) push(st->slots()[i], v);
+                    break;
+                }
                 case ObjType::MapLeaf: {
                     auto* l = static_cast<MapLeafObj*>(o);
                     if (l->bytes < sizeof(Obj) + 8 + 3 * sizeof(Value)) {
@@ -3217,6 +3299,34 @@ Value copy_object(Dest& dest, Value v, CopySeen& seen) {
                 static_cast<RecordObj*>(as_obj(rec))->items()[i] = item;
             }
             return rec;
+        }
+        case ObjType::Trunk: {
+            // What crosses is this version's elements, in a store of their
+            // own and nothing more: not the slots of every other version, not
+            // the indexes, which the other side remakes if it searches. A
+            // version is read through its chain (`trunk_read`), so an old one
+            // crosses as what it holds.
+            auto* src = static_cast<TrunkObj*>(o);
+            const uint32_t n = src->end - src->start;
+            const uint32_t start = src->start;
+            Value store = dest.make_trunk_store(TRUNK_ORIGIN - n / 2, n);
+            auto* st = static_cast<TrunkStoreObj*>(as_obj(store));
+            st->lo = TRUNK_ORIGIN - n / 2;
+            st->hi = st->lo + n;
+            st->ilo = st->ihi = st->klo = st->khi = st->lo;
+            Value out = dest.make_trunk(store, st->lo, st->hi);
+            seen.emplace(v, out);
+            for (uint32_t i = 0; i < n; ++i) {
+                Value item = copy_value(dest, trunk_read(as_obj(v), start + i), seen);
+                auto* st2 = static_cast<TrunkStoreObj*>(as_obj(static_cast<TrunkObj*>(as_obj(out))->link));
+                st2->slots()[i] = item;
+            }
+            return out;
+        }
+        case ObjType::TrunkStore: {
+            // Only ever reached from a trunk, which copies what it holds
+            // rather than its store; a store met alone is copied empty.
+            return dest.make_trunk_store(TRUNK_ORIGIN, 0);
         }
         case ObjType::Map: {
             // Copied branch for branch, so the shape -- and with it the

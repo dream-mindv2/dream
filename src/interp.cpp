@@ -403,6 +403,8 @@ bool values_equal(Process& p, Value a, Value b, bool* raised, int depth) {
                 }
             }
         }
+        case ObjType::Trunk:
+            return trunk_equal(p, fa, fb, raised, depth);
         case ObjType::Array: {
             auto* x = static_cast<ArrayObj*>(oa);
             auto* y = static_cast<ArrayObj*>(ob);
@@ -1726,8 +1728,24 @@ void container_get(Process& p, uint32_t at, Value container, Value key, Value fr
                                     describe(p, container)));
         return;
     }
+    if (is_obj(container, ObjType::Trunk)) {
+        if (!is_fixnum(key)) {
+            do_raise(p, type_error(p, "a position is an integer, not " + describe(p, key)));
+            return;
+        }
+        const int64_t k = fixnum_value(key);
+        if (k >= 0 && k < int64_t(trunk_length(container))) {
+            enter(p, trunk_element(container, uint32_t(k)));
+            return;
+        }
+        if (get_fallback(p, at, frame)) return;
+        do_raise(p, raise_error(p, out_of_bounds_atom(p),
+                                "index " + std::to_string(k) + " is outside a trunk of " +
+                                    std::to_string(trunk_length(container))));
+        return;
+    }
     if (!is_sequence(container)) {
-        do_raise(p, type_error(p, "`.[ ]` reads a map, an array or a list, not " +
+        do_raise(p, type_error(p, "`.[ ]` reads a map, an array, a list or a trunk, not " +
                                       describe(p, container)));
         return;
     }
@@ -3874,6 +3892,21 @@ bool force_deep(Process& p, Value v, Value* out) {
             *out = first;
             return true;
         }
+        case ObjType::Trunk: {
+            // Each element forced where it lies: a forced suspension reads as
+            // its value from every slot and diff that holds it, so nothing is
+            // written back, and the version is the one it was.
+            p.stack.push_back(head);
+            const uint32_t n = trunk_length(head);
+            for (uint32_t i = 0; i < n; ++i) {
+                Value tmp;
+                if (!force_deep(p, trunk_element(p.stack[base], i), &tmp)) return unwind(out);
+            }
+            as_obj(p.stack[base])->aux |= AUX_DEEP_FORCED;
+            *out = p.stack[base];
+            p.stack.resize(base);
+            return true;
+        }
         case ObjType::Array: {
             p.stack.push_back(head);
             // Re-read on both sides of the force, for the reason the list
@@ -4013,5 +4046,9 @@ std::string describe(Process& p, Value v) {
 }
 
 std::string image_function_name(Process& p, uint32_t fi) { return function_name(p, fi); }
+
+bool equal_values(Process& p, Value a, Value b, bool* raised, int depth) {
+    return values_equal(p, a, b, raised, depth);
+}
 
 }  // namespace dream

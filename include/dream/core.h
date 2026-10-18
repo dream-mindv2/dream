@@ -64,7 +64,10 @@ typedef enum dream_type {
     DREAM_TYPE_TENSOR,
     /* A value of a declared record or union: a fixed run of fields and the
      * name of what it is. Appended for the same reason as the two above. */
-    DREAM_TYPE_RECORD
+    DREAM_TYPE_RECORD,
+    /* A trunk of std.trunk: a sequence whose representation the VM
+     * chooses. Appended for the same reason as the three above. */
+    DREAM_TYPE_TRUNK
 } dream_type;
 
 /* `thread` was the original spelling in the language spec and is kept as an

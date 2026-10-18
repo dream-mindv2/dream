@@ -1,0 +1,45 @@
+// std.trunk under both tiers: loops hot enough to be compiled, versions read
+// after newer ones were written in place, a trunk crossing into another
+// process and into the shared area, and `.[ ]`, `len`, `==` and printing.
+import std.console;
+import std.trunk;
+import std.list;
+import std.vm;
+
+let rec fill i n !c = if i >= n { c } else { fill (i + 1) n (trunk.push (i * i) c) };
+let rec sum_at i !c !acc = if i >= len c { acc } else { sum_at (i + 1) c (acc + c.[i]) };
+let rec dedupe xs !seen = match xs {
+    [] => seen,
+    [x, ..rest] => if trunk.contains x seen { dedupe rest seen } else { dedupe rest (trunk.push x seen) },
+};
+// The count is evaluated before it is put, so no version is held by it.
+let put_now w !n acc = trunk.put w n acc;
+let rec tally ws !acc = match ws {
+    [] => acc,
+    [w, ..rest] => tally rest (put_now w (Option.unwrap_or 0 (trunk.lookup w acc) + 1) acc),
+};
+let rec churn i n !q !sum = if i >= n { sum } else {
+    let q2 = trunk.push i q;
+    churn (i + 1) n (trunk.rest q2) (sum + trunk.first q2)
+};
+
+let main! = {
+    let squares = fill 0 3000 trunk.empty;
+    console.print! (sum_at 0 squares 0)
+    console.print! (len (dedupe (list.map (fn i -> i % 97) (list.range 0 5000)) trunk.empty))
+    let counts = tally (list.map (fn i -> "w" + to_string (i % 13)) (list.range 0 2000)) trunk.empty;
+    console.print! (trunk.take 3 counts)
+    console.print! (churn 0 4000 (trunk.of (list.range 0 100)) 0)
+    // Versions: each read after the next was written in place.
+    let a = trunk.of [1, 2, 3];
+    let b = trunk.set 0 10 a;
+    let c = trunk.push 4 b;
+    let d = trunk.cons 0 (trunk.rest c);
+    console.print! [a, b, c, d]
+    console.print! [a == trunk.of [1, 2, 3], d == trunk.of [0, 2, 3, 4], type_of d]
+    // Into a child, which gets the version's elements and nothing else.
+    let p = spawn! $( trunk.push 99 b );
+    console.print! (join! p)
+    let shared = vm.share! (trunk.of ["x", "y"]);
+    console.print! [trunk.push "z" shared, shared]
+};

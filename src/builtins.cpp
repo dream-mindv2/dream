@@ -3511,6 +3511,323 @@ NativeResult core_list_drop(Process& p, Value, Value* args, uint32_t) {
     return NativeResult::ok(rest);
 }
 
+// A sorting heap is what `list.sort q` would answer, kept for a loop that
+// sorts its queue each step only to take the smallest and hand the rest on
+// with something added: `drain (list.tail (list.sort q) + [x])`. Each step
+// was a sort; with this it is a pop and a push.
+//
+// `#[mode, base, pending, root, size, seq]`. `pending` is the pieces handed
+// on since the heap was last settled, newest first, each a list not yet
+// read. In mode 0 the heap is still the list it was made from, `base`,
+// untouched, so asking whether it is empty forces only its first cell, as
+// `list.is_empty q` does. In mode 1 it is a leftist heap, `root`, holding
+// `size` elements, each numbered in the order the sort would have met it
+// (`seq`), and ordered by `compare` and then by that number: a stable
+// sort's order, so the smallest is the head `list.sort` would answer. In
+// mode 2 it is a list again, `base`, sorted the way `list.sort` sorts it:
+// what a heap becomes on meeting an element `compare` does not order
+// totally -- a NaN, a map -- for which only the sort itself answers right.
+//
+// Settling -- reading what is pending, and building the heap from the list
+// the first time -- forces every element, which is what the sort it stands
+// for does before it compares anything, and happens where that sort would
+// have been forced: at a minimum or a pop. It is done in place, with the
+// write barrier, since what the heap stands for does not change. A heap
+// that is pushed or popped is a new one: the old one is still the queue it
+// was.
+
+bool compare_values(Process& p, Value a, Value b, int depth, int* out);
+
+enum { HEAP_MODE, HEAP_BASE, HEAP_PENDING, HEAP_ROOT, HEAP_SIZE, HEAP_SEQ, HEAP_FIELDS };
+// A node: `#[element, seq, rank, left, right]`; the empty heap is `()`.
+enum { NODE_ELEM, NODE_SEQ, NODE_RANK, NODE_LEFT, NODE_RIGHT, NODE_FIELDS };
+
+static Value heap_field(Value h, int f) { return static_cast<ArrayObj*>(as_obj(h))->items()[f]; }
+static void heap_store(Process& p, Value h, int f, Value v) {
+    auto* a = static_cast<ArrayObj*>(as_obj(h));
+    a->items()[f] = v;
+    p.heap().remember_if_old(a, v);
+}
+
+static Value make_heap(Process& p, int mode, Value base, Value pending, Value root, int64_t size, int64_t seq) {
+    Value h = p.heap().make_array(HEAP_FIELDS);
+    auto* a = static_cast<ArrayObj*>(as_obj(h));
+    a->items()[HEAP_MODE] = make_fixnum(mode);
+    a->items()[HEAP_BASE] = base;
+    a->items()[HEAP_PENDING] = pending;
+    a->items()[HEAP_ROOT] = root;
+    a->items()[HEAP_SIZE] = make_fixnum(size);
+    a->items()[HEAP_SEQ] = make_fixnum(seq);
+    return h;
+}
+
+/// Whether `compare` orders `v` against anything of its kind totally: no
+/// NaN, no map, nothing nested too deep to say.
+static bool heap_orderly(Value v, int depth) {
+    v = resolve(v);
+    if (depth > 64) return false;
+    if (is_obj(v, ObjType::Float)) return !std::isnan(static_cast<FloatObj*>(as_obj(v))->value);
+    if (is_obj(v, ObjType::Cons)) {
+        for (Value c = v; ; ) {
+            c = resolve(c);
+            if (is_nil(c)) return true;
+            if (!is_obj(c, ObjType::Cons)) return heap_orderly(c, depth + 1);
+            if (!heap_orderly(static_cast<ConsObj*>(as_obj(c))->head, depth + 1)) return false;
+            c = static_cast<ConsObj*>(as_obj(c))->tail;
+        }
+    }
+    if (is_obj(v, ObjType::Array)) {
+        auto* a = static_cast<ArrayObj*>(as_obj(v));
+        for (uint32_t i = 0; i < a->len; ++i) if (!heap_orderly(a->items()[i], depth + 1)) return false;
+        return true;
+    }
+    if (is_obj(v, ObjType::Record)) {
+        auto* r = static_cast<RecordObj*>(as_obj(v));
+        for (uint32_t i = 0; i < r->len; ++i) if (!heap_orderly(r->items()[i], depth + 1)) return false;
+        return true;
+    }
+    return is_fixnum(v) || bigint::is_big(v) || is_atom(v) || is_char(v) || is_bool(v) || is_unit(v)
+        || is_obj(v, ObjType::Str) || is_nil(v);
+}
+
+static int64_t node_rank(Value n) { return is_unit(n) ? 0 : fixnum_value(heap_field(n, NODE_RANK)); }
+
+/// Whether node `a` comes before node `b`: smaller, or as small and met first.
+static bool node_before(Process& p, Value a, Value b, bool* ok) {
+    int cmp = 0;
+    if (!compare_values(p, heap_field(a, NODE_ELEM), heap_field(b, NODE_ELEM), 0, &cmp)) { *ok = false; return false; }
+    if (cmp != 0) return cmp < 0;
+    return fixnum_value(heap_field(a, NODE_SEQ)) < fixnum_value(heap_field(b, NODE_SEQ));
+}
+
+static Value make_node(Process& p, Value elem, Value seq, Value left, Value right) {
+    if (node_rank(left) < node_rank(right)) std::swap(left, right);
+    Value n = p.heap().make_array(NODE_FIELDS);
+    auto* a = static_cast<ArrayObj*>(as_obj(n));
+    a->items()[NODE_ELEM] = elem;
+    a->items()[NODE_SEQ] = seq;
+    a->items()[NODE_RANK] = make_fixnum(node_rank(right) + 1);
+    a->items()[NODE_LEFT] = left;
+    a->items()[NODE_RIGHT] = right;
+    return n;
+}
+
+/// Two leftist heaps as one, sharing what it does not change. Its depth is
+/// the right spines', a logarithm of the size. Nothing here forces.
+static Value heap_merge(Process& p, Value a, Value b, bool* ok) {
+    if (is_unit(a)) return b;
+    if (is_unit(b)) return a;
+    if (!node_before(p, a, b, ok)) {
+        if (!*ok) return UNIT;
+        std::swap(a, b);
+    }
+    Value right = heap_merge(p, heap_field(a, NODE_RIGHT), b, ok);
+    if (!*ok) return UNIT;
+    return make_node(p, heap_field(a, NODE_ELEM), heap_field(a, NODE_SEQ), heap_field(a, NODE_LEFT), right);
+}
+
+/// The elements of a heap, smallest first, by popping a copy: what the list
+/// it stands for, sorted, is.
+static bool heap_drain(Process& p, Value root, std::vector<Value>* out) {
+    bool ok = true;
+    while (!is_unit(root)) {
+        out->push_back(heap_field(root, NODE_ELEM));
+        root = heap_merge(p, heap_field(root, NODE_LEFT), heap_field(root, NODE_RIGHT), &ok);
+        if (!ok) return false;
+    }
+    return true;
+}
+
+/// Sort `items` as `list.sort` does -- stable, by `compare` -- into a list.
+static bool sort_as_written(Process& p, std::vector<Value>& items, Value* out) {
+    std::vector<uint32_t> order(items.size());
+    for (uint32_t i = 0; i < order.size(); ++i) order[i] = i;
+    bool ok = true;
+    std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+        if (!ok) return false;
+        int cmp = 0;
+        if (!compare_values(p, items[a], items[b], 0, &cmp)) { ok = false; return false; }
+        return cmp < 0;
+    });
+    if (!ok) return false;
+    Value list = NIL;
+    for (size_t i = order.size(); i-- > 0;) list = p.heap().make_cons(items[order[i]], list);
+    *out = list;
+    return true;
+}
+
+/// Read what is pending into the heap, and the list it was made from the
+/// first time, forcing each element in the order the sort would. False,
+/// with the reason in `p.result`, when a force raised or the list is not one.
+static bool heap_settle(Process& p, size_t at) {
+    int mode = int(fixnum_value(heap_field(p.stack[at], HEAP_MODE)));
+    if (mode != 0 && is_nil(resolve(heap_field(p.stack[at], HEAP_PENDING)))) return true;
+    // Everything to be read, oldest first: the list itself, then each piece.
+    std::vector<Value> chunks;
+    if (mode == 0) chunks.push_back(heap_field(p.stack[at], HEAP_BASE));
+    {
+        std::vector<Value> newest_first;
+        for (Value c = resolve(heap_field(p.stack[at], HEAP_PENDING)); is_obj(c, ObjType::Cons);
+             c = resolve(static_cast<ConsObj*>(as_obj(c))->tail))
+            newest_first.push_back(static_cast<ConsObj*>(as_obj(c))->head);
+        chunks.insert(chunks.end(), newest_first.rbegin(), newest_first.rend());
+    }
+    // Each chunk forced whole, as the sort forces its list, and kept on the
+    // value stack while the next is.
+    const size_t first = p.stack.size();
+    for (size_t i = 0; i < chunks.size(); ++i) p.stack.push_back(chunks[i]);
+    for (size_t i = 0; i < chunks.size(); ++i) {
+        Value w;
+        if (!force_deep(p, p.stack[first + i], &w)) return false;
+        p.stack[first + i] = w;
+    }
+    std::vector<Value> fresh;
+    for (size_t i = 0; i < chunks.size(); ++i) {
+        Value c = resolve(p.stack[first + i]);
+        while (is_obj(c, ObjType::Cons)) {
+            fresh.push_back(resolve(static_cast<ConsObj*>(as_obj(c))->head));
+            c = resolve(static_cast<ConsObj*>(as_obj(c))->tail);
+        }
+        if (!is_nil(c)) {
+            p.stack.resize(first);
+            p.result = raise_error(p, well_known(p.runtime()).type_error, "array_of_list needs a list");
+            return false;
+        }
+    }
+    p.stack.resize(first);
+    Value h = p.stack[at];
+    bool orderly = mode != 2;
+    for (Value v : fresh) if (orderly && !heap_orderly(v, 0)) orderly = false;
+    bool ok = true;
+    if (!orderly) {
+        // A list from here on, sorted as the program sorts it: what was in
+        // the heap, in its order, then what came after it.
+        std::vector<Value> items;
+        if (mode == 1 && !heap_drain(p, heap_field(h, HEAP_ROOT), &items)) return false;
+        if (mode == 2) {
+            for (Value c = resolve(heap_field(h, HEAP_BASE)); is_obj(c, ObjType::Cons); c = resolve(static_cast<ConsObj*>(as_obj(c))->tail))
+                items.push_back(static_cast<ConsObj*>(as_obj(c))->head);
+        }
+        items.insert(items.end(), fresh.begin(), fresh.end());
+        Value sorted;
+        if (!sort_as_written(p, items, &sorted)) return false;
+        heap_store(p, h, HEAP_BASE, sorted);
+        heap_store(p, h, HEAP_ROOT, UNIT);
+        heap_store(p, h, HEAP_PENDING, NIL);
+        heap_store(p, h, HEAP_MODE, make_fixnum(2));
+        return true;
+    }
+    Value root = mode == 1 ? heap_field(h, HEAP_ROOT) : UNIT;
+    int64_t seq = fixnum_value(heap_field(h, HEAP_SEQ));
+    int64_t size = mode == 1 ? fixnum_value(heap_field(h, HEAP_SIZE)) : 0;
+    for (Value v : fresh) {
+        root = heap_merge(p, root, make_node(p, v, make_fixnum(seq++), UNIT, UNIT), &ok);
+        if (!ok) return false;
+        ++size;
+    }
+    heap_store(p, h, HEAP_ROOT, root);
+    heap_store(p, h, HEAP_SIZE, make_fixnum(size));
+    heap_store(p, h, HEAP_SEQ, make_fixnum(seq));
+    heap_store(p, h, HEAP_PENDING, NIL);
+    heap_store(p, h, HEAP_BASE, NIL);
+    heap_store(p, h, HEAP_MODE, make_fixnum(1));
+    return true;
+}
+
+/// `_heap_of xs`: the heap `xs` sorts to, nothing read yet.
+NativeResult core_heap_of(Process& p, Value, Value* args, uint32_t) {
+    return NativeResult::ok(make_heap(p, 0, args[0], NIL, UNIT, 0, 0));
+}
+
+/// `_heap_push h piece`: the heap of the list `h` stands for with `piece`, a
+/// list, after it. Nothing is read.
+NativeResult core_heap_push(Process& p, Value, Value* args, uint32_t) {
+    Value h = resolve(args[0]);
+    Value pending = p.heap().make_cons(args[1], heap_field(h, HEAP_PENDING));
+    h = resolve(args[0]);
+    return NativeResult::ok(make_heap(p, int(fixnum_value(heap_field(h, HEAP_MODE))), heap_field(h, HEAP_BASE), pending,
+                                      heap_field(h, HEAP_ROOT), fixnum_value(heap_field(h, HEAP_SIZE)),
+                                      fixnum_value(heap_field(h, HEAP_SEQ))));
+}
+
+/// `_heap_empty h`: whether the list `h` stands for is empty, forcing what
+/// `list.is_empty` of it would: its first cell, and nothing in a piece after
+/// anything already there.
+NativeResult core_heap_empty(Process& p, Value, Value* args, uint32_t) {
+    VouchesForGc vouch(p);
+    const size_t base = p.stack.size();
+    p.stack.push_back(resolve(args[0]));
+    auto fail = [&]() {
+        if (!p.force_blocked) p.stack.resize(base);
+        return NativeResult::raise(p.result);
+    };
+    int mode = int(fixnum_value(heap_field(p.stack[base], HEAP_MODE)));
+    bool something = false;
+    if (mode == 1) something = fixnum_value(heap_field(p.stack[base], HEAP_SIZE)) > 0;
+    else {
+        Value w;
+        if (!force_whnf(p, heap_field(p.stack[base], HEAP_BASE), &w)) return fail();
+        // Not a list at all is not empty, as `list.is_empty` says.
+        something = !is_nil(w);
+    }
+    if (!something) {
+        // The pieces after it, oldest first, until one has a cell.
+        std::vector<Value> newest_first;
+        for (Value c = resolve(heap_field(p.stack[base], HEAP_PENDING)); is_obj(c, ObjType::Cons);
+             c = resolve(static_cast<ConsObj*>(as_obj(c))->tail))
+            newest_first.push_back(static_cast<ConsObj*>(as_obj(c))->head);
+        const size_t first = p.stack.size();
+        for (auto it = newest_first.rbegin(); it != newest_first.rend(); ++it) p.stack.push_back(*it);
+        for (size_t i = first; i < p.stack.size() && !something; ++i) {
+            Value w;
+            if (!force_whnf(p, p.stack[i], &w)) return fail();
+            something = !is_nil(w);
+        }
+    }
+    p.stack.resize(base);
+    return NativeResult::ok(make_bool(!something));
+}
+
+/// `_heap_min h`: the head of the list `h` stands for, sorted. Asked only of
+/// a heap that is not empty.
+NativeResult core_heap_min(Process& p, Value, Value* args, uint32_t) {
+    VouchesForGc vouch(p);
+    const size_t base = p.stack.size();
+    p.stack.push_back(resolve(args[0]));
+    if (!heap_settle(p, base)) {
+        if (!p.force_blocked) p.stack.resize(base);
+        return NativeResult::raise(p.result);
+    }
+    Value h = p.stack[base];
+    p.stack.resize(base);
+    if (fixnum_value(heap_field(h, HEAP_MODE)) == 2)
+        return NativeResult::ok(static_cast<ConsObj*>(as_obj(resolve(heap_field(h, HEAP_BASE))))->head);
+    return NativeResult::ok(heap_field(heap_field(h, HEAP_ROOT), NODE_ELEM));
+}
+
+/// `_heap_pop h`: the heap of the tail of the list `h` stands for, sorted.
+/// Asked only of a heap that is not empty.
+NativeResult core_heap_pop(Process& p, Value, Value* args, uint32_t) {
+    VouchesForGc vouch(p);
+    const size_t base = p.stack.size();
+    p.stack.push_back(resolve(args[0]));
+    if (!heap_settle(p, base)) {
+        if (!p.force_blocked) p.stack.resize(base);
+        return NativeResult::raise(p.result);
+    }
+    Value h = p.stack[base];
+    p.stack.resize(base);
+    if (fixnum_value(heap_field(h, HEAP_MODE)) == 2)
+        return NativeResult::ok(make_heap(p, 2, static_cast<ConsObj*>(as_obj(resolve(heap_field(h, HEAP_BASE))))->tail,
+                                          NIL, UNIT, 0, 0));
+    bool ok = true;
+    Value root = heap_field(h, HEAP_ROOT);
+    Value rest = heap_merge(p, heap_field(root, NODE_LEFT), heap_field(root, NODE_RIGHT), &ok);
+    if (!ok) return NativeResult::raise(p.result);
+    return NativeResult::ok(make_heap(p, 1, NIL, NIL, rest, fixnum_value(heap_field(h, HEAP_SIZE)) - 1,
+                                      fixnum_value(heap_field(h, HEAP_SEQ))));
+}
+
 /// `_memo_cells n cell`: an array of `n` cells, cell `i` the call `cell i`
 /// suspended. The supercompiler writes it for a function whose calls of
 /// itself it keeps in a table (`memo_table` in dreams/src/accum.dr): `cell`
@@ -5209,6 +5526,11 @@ const BuiltinDef BUILTINS[] = {
     {"_list_drop", 2, 0b01, core_list_drop},
     {"_index_new", 3, 0b110, core_index_new},
     {"_index_find", 2, 0b01, core_index_find},
+    {"_heap_of", 1, 0b0, core_heap_of},
+    {"_heap_push", 2, 0b01, core_heap_push},
+    {"_heap_empty", 1, 0b1, core_heap_empty},
+    {"_heap_min", 1, 0b1, core_heap_min},
+    {"_heap_pop", 1, 0b1, core_heap_pop},
 };
 
 uint32_t builtin_count() { return uint32_t(sizeof(BUILTINS) / sizeof(BUILTINS[0])); }

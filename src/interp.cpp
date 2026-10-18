@@ -3002,7 +3002,10 @@ std::vector<int32_t> g_flat_free;
 const Image* g_flat_image = nullptr;
 std::atomic<uint64_t> g_flat_thunks{0}, g_flat_values{0};
 
-int32_t flat_free_count(const Image& img, uint32_t root) {
+std::vector<std::vector<uint32_t>> g_flat_slots;
+std::atomic<uint64_t> g_flat_forward{0};
+
+int32_t flat_free_count(const Image& img, uint32_t root, std::vector<uint32_t>* slots_out) {
     std::vector<uint8_t> read, bound;
     std::vector<uint32_t> caps;
     std::vector<uint32_t> work{root}, kids;
@@ -3033,21 +3036,37 @@ int32_t flat_free_count(const Image& img, uint32_t root) {
     }
     int32_t count = 0;
     for (uint32_t i = 0; i < read.size(); ++i)
-        if (read[i] && !(i < bound.size() && bound[i])) ++count;
+        if (read[i] && !(i < bound.size() && bound[i])) {
+            ++count;
+            slots_out->push_back(i);
+        }
     std::sort(caps.begin(), caps.end());
     count += int32_t(std::unique(caps.begin(), caps.end()) - caps.begin());
     return count;
 }
 
-void note_flat_thunk(const Image& img, uint32_t node) {
+void note_flat_thunk(const Image& img, uint32_t node, Value frame) {
     int32_t k;
+    bool forward = false;
     {
         std::lock_guard<std::mutex> g(g_flat_mutex);
-        if (g_flat_image != &img) { g_flat_image = &img; g_flat_free.assign(img.node_count(), -1); }
+        if (g_flat_image != &img) {
+            g_flat_image = &img;
+            g_flat_free.assign(img.node_count(), -1);
+            g_flat_slots.assign(img.node_count(), {});
+        }
         if (node >= g_flat_free.size()) return;
-        if (g_flat_free[node] < 0) g_flat_free[node] = flat_free_count(img, node);
+        if (g_flat_free[node] < 0) g_flat_free[node] = flat_free_count(img, node, &g_flat_slots[node]);
         k = g_flat_free[node];
+        // A slot it reads that is not bound yet: copying its value now would
+        // copy nothing, so this suspension would still need its frame.
+        if (is_obj(frame, ObjType::Frame)) {
+            auto* f = static_cast<FrameObj*>(as_obj(frame));
+            for (uint32_t slot : g_flat_slots[node])
+                if (slot < f->nslots && f->slots()[slot] == NIL_SLOT) forward = true;
+        }
     }
+    if (forward) g_flat_forward.fetch_add(1, std::memory_order_relaxed);
     g_flat_thunks.fetch_add(1, std::memory_order_relaxed);
     g_flat_values.fetch_add(uint64_t(k), std::memory_order_relaxed);
 }
@@ -3068,6 +3087,8 @@ void dbg_dump_thunks() {
                              "as flat suspensions %llu bytes against %llu now plus every frame they hold\n",
                      (unsigned long long)thunks, thunks ? double(values) / double(thunks) : 0.0,
                      (unsigned long long)flat, (unsigned long long)now);
+        std::fprintf(stderr, "; of them %llu read a slot not yet bound when they were made\n",
+                     (unsigned long long)g_flat_forward.load());
     }
     if (!g_probe_thunk) return;
     for (size_t i = 0; i < 64; ++i) {
@@ -3281,7 +3302,7 @@ Value thunk_for(Process& p, uint32_t node, Value frame) {
         }
         default: break;
     }
-    if (g_probe_frames) note_flat_thunk(img, node);
+    if (g_probe_frames) note_flat_thunk(img, node, frame);
     if (g_probe_thunk) {
         g_thunk_counts[size_t(n.op) & 63].fetch_add(1, std::memory_order_relaxed);
         uint64_t func = 0xffffffffu;

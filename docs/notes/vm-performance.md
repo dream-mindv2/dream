@@ -1881,3 +1881,43 @@ The first picture, 5.26 s of wall:
 work: 2.0 s of it the root's, and per phase the largest part. On 24 threads
 the parts' CPU is 30 s -- SMT makes each slower than on 8 -- of which
 parsing is 5.7 s, 47 reductions a byte of source.
+
+## Suspensions that hold values, and frames on a stack: the measurement and the plan (2026-10-18)
+
+A suspension the interpreter makes (`thunk_for`, a lazy `let`) is a node and
+the frame it was made in, and it keeps that frame alive however few of the
+frame's slots it reads. `DREAM_PROBE_FRAMES=1 dream --stats --no-jit` on a
+self-compile, extended to ask the one question that decides whether the
+alternative is possible:
+
+| | |
+|---|---|
+| frames made | 59.1M, 3.64 GB -- 44% of everything allocated |
+| held by a suspension | 29.1M, 2.01 GB |
+| suspensions made | 83.6M, reading **1.69** values each |
+| as suspensions that copy those values | 2.47 GB, against 2.01 GB now plus the frames |
+| reading a slot not yet bound when made | **0** |
+
+The last line is the one that matters. A suspension that copied the values
+it reads, as a closure already does, would need its frame for nothing; and
+since none read a slot bound after them, nothing is lost by copying at the
+moment they are made. Then nothing on the heap points at a frame -- closures
+copy, suspensions copy -- and a frame is reachable only from the
+continuation stack and the current frame, so its life is exactly a call's.
+
+The plan, in the order it can be measured:
+
+1. **Flat suspensions.** `thunk_for` copies the node's free slots (worked out
+   once per node, as the probe does) and the closure; forcing one runs the
+   node in a frame filled from them. A slot not yet bound (none in a
+   self-compile, but a `let rec` can) gets a placeholder the binding later
+   fills.
+2. **Frames on a per-process stack**, released when the machine returns below
+   the depth a frame was made at, or at a tail call. The collector scans the
+   live ones as roots. That takes 3.6 GB of 7.6 off the heap, and all the
+   promotion of frames a suspension kept past a minor collection.
+3. **The JIT's suspensions** (`dream_rt_snapshot`) copy the same way.
+
+"Frames freed on return" above measured the ceiling of freeing only the
+frames nobody held at about 1%: those were already dying young. What this
+removes is the other half -- the held ones, which are the ones that cost.

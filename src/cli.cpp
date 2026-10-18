@@ -515,9 +515,6 @@ int dream_main(int argc, char** argv) {
         }
     }
 
-    // Before anything runs: the limits are read once, by the first process.
-    override_limits(max_depth, max_stack, max_heap);
-
     if (path.empty()) {
         std::fputs(USAGE, stderr);
         return 2;
@@ -551,6 +548,15 @@ int dream_main(int argc, char** argv) {
     } else if (!std::getenv("DREAM_NURSERY_MAX")) {
         if (const uint64_t asked = rt.image().vm_option(VMOP_NURSERY_MAX)) set_nursery_max(size_t(asked));
     }
+    // A process's heap cap the same way: `--max-heap`, `DREAM_MAX_HEAP`, then
+    // the image's `[vm] max_heap`, then the default. The cap is there to stop
+    // a program that runs away; a program that knows it is large -- a
+    // whole-program compile -- says so in its manifest.
+    if (!max_heap && !std::getenv("DREAM_MAX_HEAP")) {
+        if (const uint64_t asked = rt.image().vm_option(VMOP_MAX_HEAP)) max_heap = size_t(asked);
+    }
+    // Before anything runs: the limits are read once, by the first process.
+    override_limits(max_depth, max_stack, max_heap);
 
     if (profile_top) rt.enable_profile(profile_top);
 

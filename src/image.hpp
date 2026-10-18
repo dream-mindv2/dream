@@ -219,6 +219,7 @@ static_assert(sizeof(VmOptionRec) == 16, "VM option records are 16 bytes on disk
 
 /// `VMOP` keys. See `emit.vm_nursery_max` in dreams/src/emit.dr.
 inline constexpr uint32_t VMOP_NURSERY_MAX = 1;
+inline constexpr uint32_t VMOP_MAX_HEAP = 2;
 
 /// One module of a whole-program image. Compilation is whole-program, so an
 /// image carries every module it needs and records which globals belong to

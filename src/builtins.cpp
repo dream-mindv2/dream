@@ -3910,6 +3910,173 @@ NativeResult core_tally_lookup(Process& p, Value, Value* args, uint32_t) {
     return NativeResult::ok(map_lookup(p, t, x, &n) ? n : make_fixnum(0));
 }
 
+// A key index is what `list.find (fn e -> e.[0] == x) xs` -- a scan comparing
+// a key read out of each element with `x`, as `std`'s fusion writes one --
+// would find for every `x` at once, filled only as far as the scans it stands
+// for would have read. `#[map, cut, broken, path, x_first, read]`: `map` takes each
+// flat key to the first element that has it, `cut` is the list past what has
+// been read, `path` the keys the scan reads an element's key by (`e.[0]` is
+// `[0]`), `x_first` whether the scan forces `x` before the key, and `read`
+// how many elements have been read.
+//
+// A lookup of a key already read answers from the map: the scan would have
+// forced everything before it, which the index has. Otherwise the index reads
+// on from the cut, an element and its key at a time, as the scan would, until
+// it finds the key or the list ends. It is filled in place -- each answer is
+// what the scan answers, so no one can tell -- with the write barrier on each
+// store, as a thunk's update has. A key that is not flat, or a path the index
+// cannot follow, breaks it: it answers `()` from then on, and the scan runs as
+// written.
+
+enum { KEY_MAP, KEY_CUT, KEY_BROKEN, KEY_PATH, KEY_X_FIRST, KEY_READ, KEY_SIZE };
+
+static void key_store(Process& p, Value idx, int field, Value v) {
+    auto* a = static_cast<ArrayObj*>(as_obj(idx));
+    a->items()[field] = v;
+    p.heap().remember_if_old(a, v);
+}
+
+/// `_index_new xs path x_first`: an index of `xs` with nothing read yet.
+NativeResult core_index_new(Process& p, Value, Value* args, uint32_t) {
+    Value idx = p.heap().make_array(KEY_SIZE);
+    auto* a = static_cast<ArrayObj*>(as_obj(idx));
+    a->items()[KEY_MAP] = p.heap().make_map(0);
+    a->items()[KEY_CUT] = args[0];
+    a->items()[KEY_BROKEN] = FALSE_V;
+    a->items()[KEY_PATH] = args[1];
+    a->items()[KEY_X_FIRST] = args[2];
+    a->items()[KEY_READ] = make_fixnum(0);
+    return NativeResult::ok(idx);
+}
+
+/// Read the key of the element at `p.stack[at]` along `path` into the same
+/// slot, forcing what each `.[k]` forces. 1 when it is a flat key, 0 when
+/// the index cannot follow, -1 when a force raised.
+static int key_read(Process& p, size_t at, Value path) {
+    p.stack.push_back(path);
+    const size_t path_at = p.stack.size() - 1;
+    for (;;) {
+        Value w;
+        if (!force_whnf(p, p.stack[at], &w)) return -1;
+        p.stack[at] = w;
+        Value rest = resolve(p.stack[path_at]);
+        if (is_nil(rest)) {
+            p.stack.pop_back();
+            return set_flat(w) ? 1 : 0;
+        }
+        if (!is_obj(rest, ObjType::Cons)) { p.stack.pop_back(); return 0; }
+        Value k = resolve(static_cast<ConsObj*>(as_obj(rest))->head);
+        p.stack[path_at] = static_cast<ConsObj*>(as_obj(rest))->tail;
+        if (is_obj(w, ObjType::Map)) {
+            Value found;
+            if (!map_lookup(p, w, k, &found)) { p.stack.pop_back(); return 0; }
+            p.stack[at] = found;
+        } else if (is_obj(w, ObjType::Record) && is_fixnum(k)) {
+            auto* r = static_cast<RecordObj*>(as_obj(w));
+            int64_t i = fixnum_value(k);
+            if (i < 0 || i >= int64_t(r->len)) { p.stack.pop_back(); return 0; }
+            p.stack[at] = r->items()[i];
+        } else if (is_obj(w, ObjType::Array) && is_fixnum(k)) {
+            auto* r = static_cast<ArrayObj*>(as_obj(w));
+            int64_t i = fixnum_value(k);
+            if (i < 0 || i >= int64_t(r->len)) { p.stack.pop_back(); return 0; }
+            p.stack[at] = r->items()[i];
+        } else if ((is_nil(w) || is_obj(w, ObjType::Cons)) && is_fixnum(k) && fixnum_value(k) >= 0) {
+            // A list read by position: its spine forced up to it.
+            for (int64_t i = fixnum_value(k); ; --i) {
+                Value c;
+                if (!force_whnf(p, p.stack[at], &c)) return -1;
+                if (!is_obj(c, ObjType::Cons)) { p.stack.pop_back(); return 0; }
+                if (i == 0) { p.stack[at] = static_cast<ConsObj*>(as_obj(c))->head; break; }
+                p.stack[at] = static_cast<ConsObj*>(as_obj(c))->tail;
+            }
+        } else {
+            p.stack.pop_back();
+            return 0;
+        }
+    }
+}
+
+/// `_index_find idx x`: what the scan finds for `x` -- `[e]`, the first
+/// element whose key is `x`, or `[]` -- forcing what it would; `()` when the
+/// index cannot say, and the scan runs as written.
+NativeResult core_index_find(Process& p, Value, Value* args, uint32_t) {
+    VouchesForGc vouch(p);
+    const size_t base = p.stack.size();
+    p.stack.push_back(resolve(args[0]));   // base: the index
+    p.stack.push_back(args[1]);            // base + 1: x
+    p.stack.push_back(UNIT);               // base + 2: scratch
+    auto fail = [&]() {
+        if (!p.force_blocked) p.stack.resize(base);
+        return NativeResult::raise(p.result);
+    };
+    auto field = [&](int f) { return static_cast<ArrayObj*>(as_obj(p.stack[base]))->items()[f]; };
+    auto broken = [&]() {
+        key_store(p, p.stack[base], KEY_BROKEN, TRUE_V);
+        p.stack.resize(base);
+        return NativeResult::ok(UNIT);
+    };
+    if (field(KEY_BROKEN) == TRUE_V) { p.stack.resize(base); return NativeResult::ok(UNIT); }
+    bool x_ready = false;
+    auto force_x = [&]() -> int {
+        if (x_ready) return 1;
+        Value x;
+        if (!force_whnf(p, p.stack[base + 1], &x)) return -1;
+        p.stack[base + 1] = x;
+        x_ready = true;
+        return set_flat(x) ? 1 : 0;
+    };
+    // Nothing read yet: the scan's first step, in its own order.
+    if (fixnum_value(field(KEY_READ)) > 0) {
+        int fx = force_x();
+        if (fx < 0) return fail();
+        if (fx == 0) { p.stack.resize(base); return NativeResult::ok(UNIT); }
+        Value found;
+        if (map_lookup(p, field(KEY_MAP), p.stack[base + 1], &found)) {
+            Value hit = p.heap().make_cons(found, NIL);
+            p.stack.resize(base);
+            return NativeResult::ok(hit);
+        }
+    }
+    for (;;) {
+        Value cell;
+        if (!force_whnf(p, field(KEY_CUT), &cell)) return fail();
+        key_store(p, p.stack[base], KEY_CUT, cell);
+        if (is_nil(cell)) {
+            // The end: forced `x` only if there was something to compare.
+            p.stack.resize(base);
+            return NativeResult::ok(NIL);
+        }
+        if (!is_obj(cell, ObjType::Cons)) return broken();
+        if (field(KEY_X_FIRST) == TRUE_V) {
+            int fx = force_x();
+            if (fx < 0) return fail();
+            if (fx == 0) { p.stack.resize(base); return NativeResult::ok(UNIT); }
+        }
+        auto* c = static_cast<ConsObj*>(as_obj(cell));
+        p.stack[base + 2] = c->head;
+        int got = key_read(p, base + 2, field(KEY_PATH));
+        if (got < 0) return fail();
+        if (got == 0) return broken();
+        int fx = force_x();
+        if (fx < 0) return fail();
+        if (fx == 0) { p.stack.resize(base); return NativeResult::ok(UNIT); }
+        Value key = p.stack[base + 2];
+        Value elem = static_cast<ConsObj*>(as_obj(resolve(field(KEY_CUT))))->head;
+        Value had;
+        if (!map_lookup(p, field(KEY_MAP), key, &had)) {
+            key_store(p, p.stack[base], KEY_MAP, map_insert(p, field(KEY_MAP), key, elem));
+        }
+        key_store(p, p.stack[base], KEY_CUT, static_cast<ConsObj*>(as_obj(resolve(field(KEY_CUT))))->tail);
+        key_store(p, p.stack[base], KEY_READ, make_fixnum(fixnum_value(field(KEY_READ)) + 1));
+        if (flat_equal(key, p.stack[base + 1])) {
+            Value hit = p.heap().make_cons(elem, NIL);
+            p.stack.resize(base);
+            return NativeResult::ok(hit);
+        }
+    }
+}
+
 NativeResult core_array_to_list(Process& p, Value, Value* args, uint32_t) {
     Value v = resolve(args[0]);
     if (!is_obj(v, ObjType::Array)) return type_fail(p, "array_to_list needs an array");
@@ -5040,6 +5207,8 @@ const BuiltinDef BUILTINS[] = {
     {"_tally", 1, 0b1, core_tally},
     {"_tally_lookup", 3, 0b000, core_tally_lookup},
     {"_list_drop", 2, 0b01, core_list_drop},
+    {"_index_new", 3, 0b110, core_index_new},
+    {"_index_find", 2, 0b01, core_index_find},
 };
 
 uint32_t builtin_count() { return uint32_t(sizeof(BUILTINS) / sizeof(BUILTINS[0])); }

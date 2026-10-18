@@ -1403,6 +1403,8 @@ static void test_builtin_table_matches_compiler() {
                               "_tally",
                               "_tally_lookup",
                               "_list_drop",
+                              "_index_new",
+                              "_index_find",
     };
     const uint32_t n = uint32_t(sizeof(expected) / sizeof(expected[0]));
     CHECK_EQ(builtin_count(), n);

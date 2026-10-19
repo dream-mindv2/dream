@@ -403,6 +403,15 @@ import std.io;
 | `open!` | `path:string → mode:atom → handle` | Opens a file. `mode` must be one of `:read`, `:write`, `:append`, or `:update`. `:write` truncates; `:update` is read-write without truncating. |
 | `close!` | `handle → unit` | Closes a handle. Safe to call from a different process than the one that opened it. |
 | `is_open!` | `handle → bool` | Returns whether a handle is still open. |
+| `temp_file!` | `dir:string → prefix:string → [path:string, handle]` | Exclusively creates an empty file with a random name and returns its path and open read-write handle. Unix permissions are at most 0600; Windows inherits the parent's ACL. Close the handle and remove the file when finished. |
+| `temp_dir!` | `dir:string → prefix:string → path:string` | Exclusively creates a directory with a random name. Unix permissions are at most 0700; Windows inherits the parent's ACL. Remove it when finished. |
+
+Temporary entries use 128 bits from the OS random generator and retry name
+collisions. The parent directory must exist. The prefix may be empty, but
+must not contain `/`, `\\`, `:` or a NUL byte. Errors raise like `open!`.
+`std.file.temp_file! ()` and `std.file.temp_dir! ()` choose the platform's
+temporary directory; `std.file.temp_file_in! dir prefix` returns a closed
+file's path and `std.file.temp_dir_in! dir prefix` creates a directory there.
 
 ### Reading and writing
 

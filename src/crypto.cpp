@@ -392,22 +392,8 @@ NativeResult crypto_random_bytes(Process& p, Value, Value* args, uint32_t) {
     }
     std::string out(size_t(n), '\0');
     auto* buf = reinterpret_cast<unsigned char*>(out.data());
-#ifdef _WIN32
-    if (n && BCryptGenRandom(nullptr, buf, ULONG(n), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
-        return crypto_fail(p, "io_error", "the system's random number generator failed");
-    }
-#elif defined(__APPLE__)
-    arc4random_buf(buf, size_t(n));
-#else
-    for (size_t got = 0; got < n;) {
-        ssize_t r = getrandom(buf + got, size_t(n) - got, 0);
-        if (r < 0) {
-            if (errno == EINTR) continue;
-            return crypto_fail(p, "io_error", std::string("getrandom: ") + std::strerror(errno));
-        }
-        got += size_t(r);
-    }
-#endif
+    std::string error;
+    if (!secure_random_bytes(buf, size_t(n), &error)) return crypto_fail(p, "io_error", error);
     return NativeResult::ok(bytes_value(p, out.data(), out.size()));
 }
 
@@ -451,6 +437,29 @@ NativeResult crypto_ed25519_verify(Process& p, Value, Value* args, uint32_t) {
 }
 
 }  // namespace
+
+bool secure_random_bytes(unsigned char* buf, size_t n, std::string* error) {
+#ifdef _WIN32
+    if (n && BCryptGenRandom(nullptr, buf, ULONG(n), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+        *error = "the system's random number generator failed";
+        return false;
+    }
+#elif defined(__APPLE__)
+    arc4random_buf(buf, n);
+#else
+    for (size_t got = 0; got < n;) {
+        ssize_t r = getrandom(buf + got, n - got, 0);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) {
+            *error = r == 0 ? "getrandom: unexpected end of input"
+                            : std::string("getrandom: ") + std::strerror(errno);
+            return false;
+        }
+        got += size_t(r);
+    }
+#endif
+    return true;
+}
 
 ModuleDef make_crypto_module() {
     return ModuleDef{"std.crypto",

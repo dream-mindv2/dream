@@ -21,6 +21,7 @@
 #include "process.hpp"
 #include "scheduler.hpp"
 #include "digest.hpp"
+#include "crypto.hpp"
 #include "tls.hpp"
 
 #if defined(__linux__) && !defined(DREAM_PORTABLE_POLLER)
@@ -919,6 +920,51 @@ NativeResult io_open(Process& p, Value, Value* args, uint32_t) {
         set_nonblocking(fd);
     }
     return NativeResult::ok(make_fixnum(HandleTable::get().add(fd, kind)));
+}
+
+std::filesystem::path fs_path(const std::string& utf8);
+std::string fs_text(const std::filesystem::path& path);
+
+/// Atomically reserve a fresh name: a read-write file, or a private directory.
+/// Randomness makes collisions unlikely; O_EXCL/mkdir make them harmless.
+NativeResult io_temp(Process& p, Value callee, Value* args, uint32_t) {
+    if (!is_string(args[0]) || !is_string(args[1])) {
+        return fail(p, "type_error", "temp_file!/temp_dir! need a directory and a name prefix");
+    }
+    std::string dir = string_arg(args[0]);
+    std::string prefix = string_arg(args[1]);
+    if (dir.empty() || dir.find('\0') != std::string::npos ||
+        prefix.find_first_of("/\\:") != std::string::npos || prefix.find('\0') != std::string::npos) {
+        return fail(p, "bad_argument", "temporary entries need a directory and a prefix without separators or a drive");
+    }
+    const bool directory = static_cast<NativeObj*>(as_obj(callee))->user != 0;
+    const char* hex = "0123456789abcdef";
+    for (unsigned attempt = 0; attempt < 128; ++attempt) {
+        unsigned char random[16];
+        std::string error;
+        if (!secure_random_bytes(random, sizeof random, &error)) return fail(p, "io_error", error);
+        std::string name = prefix;
+        for (unsigned char byte : random) {
+            name += hex[byte >> 4];
+            name += hex[byte & 15];
+        }
+        std::string path = fs_text(fs_path(dir) / fs_path(name));
+        if (directory) {
+            if (sys::mkdir(path.c_str(), 0700) == 0) {
+                return NativeResult::ok(p.heap().make_string(path.data(), uint32_t(path.size())));
+            }
+        } else {
+            int fd = sys::open(path.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+            if (fd >= 0) {
+                Value handle = make_fixnum(HandleTable::get().add(fd, HandleKind::File));
+                Value text = p.heap().make_string(path.data(), uint32_t(path.size()));
+                return NativeResult::ok(p.heap().make_cons(text, p.heap().make_cons(handle, NIL)));
+            }
+        }
+        if (errno == EINTR) continue;
+        if (errno != EEXIST) return fail_errno(p, "create temporary entry in " + dir, errno);
+    }
+    return fail(p, "already_exists", "could not reserve a temporary name in " + dir);
 }
 
 NativeResult io_close(Process& p, Value, Value* args, uint32_t) {
@@ -1856,6 +1902,8 @@ ModuleDef make_io_module() {
     return ModuleDef{"std.io",
                      {
                          {"open!", 2, 0b11, io_open},
+                         {"temp_file!", 2, 0b11, io_temp, 0},
+                         {"temp_dir!", 2, 0b11, io_temp, 1},
                          {"close!", 1, 0b1, io_close},
                          {"read!", 2, 0b11, io_read},
                          {"write!", 2, 0b11, io_write},

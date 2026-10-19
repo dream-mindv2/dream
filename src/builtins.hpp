@@ -69,6 +69,7 @@ NativeResult core_trunk_lookup(Process& p, Value self, Value* args, uint32_t n);
 NativeResult core_trunk_at(Process& p, Value self, Value* args, uint32_t n);
 NativeResult core_trunk_push(Process& p, Value self, Value* args, uint32_t n);
 NativeResult core_trunk_set(Process& p, Value self, Value* args, uint32_t n);
+NativeResult core_trunk_recall(Process& p, Value self, Value* args, uint32_t n);
 /// What `--stats` says trunks did, if any were made.
 void print_trunk_stats();
 /// `map` with `n` keys set, in order, a later one winning: what a run of

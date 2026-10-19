@@ -466,7 +466,7 @@ bool op_is_supported(Op op) {
         case Op::And: case Op::Or: case Op::Neg: case Op::Not: case Op::BitNot: case Op::TypeIs:
         // Data. See "Lists, arrays and maps" and "Lazy positions" below.
         case Op::ConstStr: case Op::Global: case Op::Builtin:
-        case Op::ListIsEmpty: case Op::ListTail: case Op::Cons:
+        case Op::ListIsEmpty: case Op::ListTail: case Op::Cons: case Op::ListIsCons: case Op::ListHead:
         case Op::MakeList: case Op::MakeArray: case Op::RecordMake: case Op::Get: case Op::Set:
         case Op::SetMany:
             return true;
@@ -1086,7 +1086,7 @@ private:
                 }
                 return true;
             case Op::Force: case Op::Neg: case Op::Not: case Op::BitNot: case Op::TypeIs:
-            case Op::ListIsEmpty: case Op::ListTail:
+            case Op::ListIsEmpty: case Op::ListTail: case Op::ListIsCons: case Op::ListHead:
                 return check(n.a, depth + 1);
             case Op::Add: case Op::Sub: case Op::Mul: case Op::Div: case Op::Mod:
             case Op::BitAnd: case Op::BitOr: case Op::BitXor: case Op::Shl: case Op::Shr:
@@ -1396,7 +1396,7 @@ private:
                 return c;
             }
             case Op::Force: case Op::Neg: case Op::Not: case Op::BitNot: case Op::TypeIs:
-            case Op::ListIsEmpty: case Op::ListTail:
+            case Op::ListIsEmpty: case Op::ListTail: case Op::ListIsCons: case Op::ListHead:
                 return 1 + expand_cost(n.a, depth + 1, calls);
             case Op::Add: case Op::Sub: case Op::Mul: case Op::Div: case Op::Mod:
             case Op::BitAnd: case Op::BitOr: case Op::BitXor: case Op::Shl: case Op::Shr:
@@ -1483,7 +1483,7 @@ private:
                 // Short-circuiting: only the left operand is certain.
                 return strict_of(n.a, depth + 1);
             case Op::Force: case Op::Neg: case Op::Not: case Op::BitNot: case Op::TypeIs:
-            case Op::ListIsEmpty: case Op::ListTail:
+            case Op::ListIsEmpty: case Op::ListTail: case Op::ListIsCons: case Op::ListHead:
                 return strict_of(n.a, depth + 1);
             case Op::Get: case Op::Set:
                 // The container and the key; a `Get`'s default only sometimes,
@@ -1616,12 +1616,13 @@ private:
                 out.push_back(n.a);
                 return true;
             case Op::Force: case Op::Neg: case Op::Not: case Op::BitNot: case Op::TypeIs: case Op::ListIsEmpty:
+            case Op::ListIsCons:
                 return force_order(n.a, depth + 1, out);
             case Op::Add: case Op::Sub: case Op::Mul: case Op::Div: case Op::Mod:
             case Op::BitAnd: case Op::BitOr: case Op::BitXor: case Op::Shl: case Op::Shr:
             case Op::Eq: case Op::Ne: case Op::Lt: case Op::Le: case Op::Gt: case Op::Ge:
                 return force_order(n.a, depth + 1, out) && force_order(n.b, depth + 1, out);
-            case Op::ListTail:
+            case Op::ListTail: case Op::ListHead:
                 // Then the tail is forced, which is work that can raise, so
                 // nothing after it is definite.
                 force_order(n.a, depth + 1, out);
@@ -1821,7 +1822,7 @@ private:
                 }
                 return;
             case Op::Force: case Op::Neg: case Op::Not: case Op::BitNot: case Op::TypeIs:
-            case Op::ListIsEmpty: case Op::ListTail:
+            case Op::ListIsEmpty: case Op::ListTail: case Op::ListIsCons: case Op::ListHead:
                 collect_calls(n.a, depth + 1);
                 return;
             case Op::Add:
@@ -2281,6 +2282,8 @@ private:
     // --- data ---------------------------------------------------------------
     JV list_is_empty(const Node& n);
     JV list_tail(const Node& n);
+    JV list_is_cons(const Node& n);
+    JV list_head(const Node& n);
     JV get(const Node& n);
     JV set(const Node& n);
     JV set_many(const Node& n);
@@ -3317,7 +3320,7 @@ void Emitter::mark_refs(uint32_t idx, int depth) {
             return;
         }
         case Op::Field: case Op::Force: case Op::TypeIs: case Op::ListTail:
-        case Op::ListIsEmpty: case Op::Neg: case Op::Not: case Op::BitNot:
+        case Op::ListIsEmpty: case Op::Neg: case Op::Not: case Op::BitNot: case Op::ListIsCons: case Op::ListHead:
             mark_refs(n.a, depth + 1);
             return;
         case Op::Bind:
@@ -3604,6 +3607,46 @@ Emitter::JV Emitter::list_is_empty(const Node& n) {
     if (failed_ || !v.v) return none();
     llvm::Value* x = box(v);
     return tag(b_.CreateSelect(b_.CreateICmpEQ(x, i64(NIL)), i64(TRUE_V), i64(FALSE_V)));
+}
+
+Emitter::JV Emitter::list_is_cons(const Node& n) {
+    JV v = node(n.a);
+    if (failed_ || !v.v) return none();
+    llvm::Value* x = box(v);
+    auto* obj = bb("cons.obj");
+    auto* done = bb("cons.done");
+    auto* from = b_.GetInsertBlock();
+    b_.CreateCondBr(is_heap_ptr(x), obj, done);
+    b_.SetInsertPoint(obj);
+    llvm::Value* type = b_.CreateLoad(i8_, b_.CreateIntToPtr(x, ptr_));
+    llvm::Value* cell = b_.CreateICmpEQ(type, llvm::ConstantInt::get(i8_, uint8_t(ObjType::Cons)));
+    auto* obj_end = b_.GetInsertBlock();
+    b_.CreateBr(done);
+    b_.SetInsertPoint(done);
+    auto* phi = b_.CreatePHI(i1_, 2);
+    phi->addIncoming(b_.getFalse(), from);
+    phi->addIncoming(cell, obj_end);
+    return tag(b_.CreateSelect(phi, i64(TRUE_V), i64(FALSE_V)));
+}
+
+/// `ListTail`'s twin: the head of a cell, forced.
+Emitter::JV Emitter::list_head(const Node& n) {
+    JV v = node(n.a);
+    if (failed_ || !v.v) return none();
+    llvm::Value* x = box(v);
+    auto* obj = bb("head.obj");
+    auto* cell = bb("head.cell");
+    auto* bad = bb("head.bad");
+    b_.CreateCondBr(is_heap_ptr(x), obj, bad);
+    b_.SetInsertPoint(obj);
+    llvm::Value* type = b_.CreateLoad(i8_, b_.CreateIntToPtr(x, ptr_));
+    b_.CreateCondBr(b_.CreateICmpEQ(type, llvm::ConstantInt::get(i8_, uint8_t(ObjType::Cons))),
+                    cell, bad);
+    b_.SetInsertPoint(bad);
+    emit_type_error("head needs a non-empty list");
+    b_.SetInsertPoint(cell);
+    llvm::Value* head = b_.CreateLoad(i64_, b_.CreateIntToPtr(b_.CreateAdd(x, i64(8)), ptr_));
+    return tag(force(head));
 }
 
 Emitter::JV Emitter::list_tail(const Node& n) {
@@ -4064,6 +4107,8 @@ Emitter::JV Emitter::node(uint32_t idx, bool tail) {
         case Op::Global: return tag(force(b_.CreateCall(rt_global_, {proc_, i32c(int(n.a))})));
         case Op::ListIsEmpty: return list_is_empty(n);
         case Op::ListTail: return list_tail(n);
+        case Op::ListIsCons: return list_is_cons(n);
+        case Op::ListHead: return list_head(n);
         case Op::Get: return get(n);
         case Op::Set: return set(n);
         case Op::SetMany: return set_many(n);
@@ -4134,7 +4179,8 @@ Emitter::JV Emitter::type_test(const Node& n) {
                        n.b == DREAM_TYPE_LIST ? ObjType::Cons :
                        n.b == DREAM_TYPE_ARRAY ? ObjType::Array :
                        n.b == DREAM_TYPE_TENSOR ? ObjType::Tensor :
-                       n.b == DREAM_TYPE_RECORD ? ObjType::Record : ObjType::Map;
+                       n.b == DREAM_TYPE_RECORD ? ObjType::Record :
+                       n.b == DREAM_TYPE_TRUNK ? ObjType::Trunk : ObjType::Map;
         llvm::Value* matches = b_.CreateICmpEQ(header, llvm::ConstantInt::get(i8_, uint8_t(kind)));
         if (n.b == DREAM_TYPE_MAP)
             matches = b_.CreateOr(matches, b_.CreateICmpEQ(
@@ -5815,7 +5861,7 @@ uint32_t body_size(const Image& img, uint32_t root, SizeScratch& s) {
             case Op::MakeClosure: case Op::MakeThunk:
                 break;
             case Op::Field: case Op::Force: case Op::TypeIs: case Op::ListTail:
-            case Op::ListIsEmpty: case Op::Neg: case Op::Not: case Op::BitNot:
+            case Op::ListIsEmpty: case Op::Neg: case Op::Not: case Op::BitNot: case Op::ListIsCons: case Op::ListHead:
                 push(n.a);
                 break;
             case Op::Bind:

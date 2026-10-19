@@ -2246,6 +2246,18 @@ void finish_unary(Process& p, Op op, Value v, uint32_t type, uint32_t invert) {
         enter(p, static_cast<ConsObj*>(as_obj(v))->tail);
         return;
     }
+    if (op == Op::ListIsCons) {
+        ret(p, make_bool(is_obj(v, ObjType::Cons)));
+        return;
+    }
+    if (op == Op::ListHead) {
+        if (!is_obj(v, ObjType::Cons)) {
+            do_raise(p, type_error(p, "head needs a non-empty list"));
+            return;
+        }
+        enter(p, static_cast<ConsObj*>(as_obj(v))->head);
+        return;
+    }
     if (op == Op::TypeIs) {
         ret(p, make_bool((surface_type(v) == dream_type(type)) != bool(invert)));
         return;
@@ -2561,7 +2573,8 @@ void step_eval(Process& p) {
             return;
         }
 
-        case Op::Neg: case Op::Not: case Op::BitNot: case Op::TypeIs: case Op::ListTail: case Op::ListIsEmpty: {
+        case Op::Neg: case Op::Not: case Op::BitNot: case Op::TypeIs: case Op::ListTail: case Op::ListIsEmpty:
+        case Op::ListIsCons: case Op::ListHead: {
             Value v;
             if (!operand_value(p, img, n.a, frame, &v)) {
                 push_cont(p, ContKind::UnaryFinish, n.op, n.b, n.c, UNIT);

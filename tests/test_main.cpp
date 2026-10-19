@@ -1416,6 +1416,7 @@ static void test_builtin_table_matches_compiler() {
                               "_trunk_at",
                               "_trunk_push",
                               "_trunk_set",
+                              "_trunk_recall",
     };
     const uint32_t n = uint32_t(sizeof(expected) / sizeof(expected[0]));
     CHECK_EQ(builtin_count(), n);

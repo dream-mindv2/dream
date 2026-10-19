@@ -84,6 +84,12 @@ enum class Op : uint8_t {
     // pipeline of setters (`p |> P.set_a 1 |> P.set_b 2`) is lowered to.
     SetMany = 82,
     Ensure = 83,  // a = body, b = cleanup; run cleanup on every exit
+    // What a list pattern asks of its subject, `a`: whether it is a cell --
+    // false for the empty list and for anything that is not a list -- and the
+    // head of one, entered. With `ListTail` they are the whole of `match` on
+    // a list, which a compile asks ninety million times; as calls of the
+    // builtins `_match_is_cons` and `_match_head` each was a native call.
+    ListIsCons = 84, ListHead = 85,
     Count
 };
 

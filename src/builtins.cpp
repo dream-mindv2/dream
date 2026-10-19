@@ -5611,6 +5611,7 @@ const BuiltinDef BUILTINS[] = {
     {"_trunk_at", 2, 0b11, core_trunk_at},
     {"_trunk_push", 2, 0b10, core_trunk_push},
     {"_trunk_set", 3, 0b101, core_trunk_set},
+    {"_trunk_recall", 2, 0b10, core_trunk_recall},
 };
 
 uint32_t builtin_count() { return uint32_t(sizeof(BUILTINS) / sizeof(BUILTINS[0])); }

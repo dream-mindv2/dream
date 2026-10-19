@@ -1468,6 +1468,17 @@ bool member_value_slow(Process& p, uint32_t imp, uint32_t name_index,
             break;
         }
     }
+    // Match Dream's name resolution: an explicit `f!` wins, otherwise the
+    // same native implementation can be called impurely as `f!`.
+    if (at == UINT32_MAX && member.len && member.data[member.len - 1] == '!') {
+        const StringRef pure{member.data, member.len - 1};
+        for (uint32_t i = 0; i < def->members.size(); ++i) {
+            if (pure.equals(def->members[i].name)) {
+                at = i;
+                break;
+            }
+        }
+    }
     if (at == UINT32_MAX) {
         *out = raise_error(p, well_known(p.runtime()).no_such_member,
                            "module `" + img.str(img.import(imp).path).str() +
@@ -1496,7 +1507,9 @@ bool member_value_slow(Process& p, uint32_t imp, uint32_t name_index,
         return true;
     }
     const NativeDef& m = def->members[at];
-    Value name = p.heap().make_string(member.data, member.len);
+    // Both spellings share this cache entry. Keep the implementation's name,
+    // so an effectful call does not change later reads of its pure spelling.
+    Value name = p.heap().make_string(m.name, uint32_t(std::strlen(m.name)));
     Value fn = make_native(p, m.fn, name, m.arity, m.strict_mask, m.user);
     if (id < p.native_cache.size()) p.native_cache[id] = fn;
     *out = fn;

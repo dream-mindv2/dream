@@ -772,6 +772,17 @@ NativeResult trunk_put(Process& p, Value, Value* args, uint32_t) {
 
 }  // namespace
 
+// The same operations as builtins, for what the supercompiler writes: a loop
+// it carries in a trunk where the program kept a list (`upserted` in
+// dreams/src/accum.dr) may belong to a program that never imports `std.trunk`,
+// and a builtin is reached by its index rather than through a module.
+NativeResult core_trunk_of(Process& p, Value self, Value* args, uint32_t n) { return trunk_from_list(p, self, args, n); }
+NativeResult core_trunk_to_list(Process& p, Value self, Value* args, uint32_t n) { return trunk_to_list(p, self, args, n); }
+NativeResult core_trunk_lookup(Process& p, Value self, Value* args, uint32_t n) { return trunk_lookup(p, self, args, n); }
+NativeResult core_trunk_at(Process& p, Value self, Value* args, uint32_t n) { return trunk_at(p, self, args, n); }
+NativeResult core_trunk_push(Process& p, Value self, Value* args, uint32_t n) { return trunk_push(p, self, args, n); }
+NativeResult core_trunk_set(Process& p, Value self, Value* args, uint32_t n) { return trunk_set(p, self, args, n); }
+
 void add_trunk_natives(std::vector<NativeDef>& members) {
     members.push_back({"trunk_of", 1, 0b0, trunk_from_list, 0, true});
     members.push_back({"trunk_to_list", 1, 0b1, trunk_to_list});

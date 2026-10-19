@@ -1410,6 +1410,12 @@ static void test_builtin_table_matches_compiler() {
                               "_heap_empty",
                               "_heap_min",
                               "_heap_pop",
+                              "_trunk_of",
+                              "_trunk_to_list",
+                              "_trunk_lookup",
+                              "_trunk_at",
+                              "_trunk_push",
+                              "_trunk_set",
     };
     const uint32_t n = uint32_t(sizeof(expected) / sizeof(expected[0]));
     CHECK_EQ(builtin_count(), n);

@@ -17,6 +17,7 @@
 #include "builtins.hpp"
 #include "jit.hpp"
 #include "scheduler.hpp"
+#include "debug.hpp"
 
 namespace dream {
 
@@ -869,6 +870,7 @@ void resume_native(Process& p, Value callee, uint32_t base, uint32_t argc, uint3
     const int64_t native_start = timed ? timeline_now() : 0;
     NativeResult r = fn(p, callee, p.stack.data() + base, argc);
     if (pinned) callee = callee_pin.get();
+    if (debug_on()) debug_native(p, callee, p.stack.data() + base, argc, r);
     if (timed && timeline_now() - native_start >= 2000) timeline_native(p, native_name(callee), native_start);
 
     // A nested force inside the native hit a blocking operation and gave up
@@ -3602,7 +3604,12 @@ void run_process(Process& p, int64_t budget) {
     // Profiling never turns on mid-run, so this is a register for the whole
     // loop rather than a load per step. That matters most for the Return run
     // below, which is more than half of all the steps a program takes.
-    const bool prof = p.runtime().profiling_for(p.id());
+    // `--debug` rides the same branch: it is decided before anything runs,
+    // and a debugged run is slow anyway, so the step a normal run takes
+    // tests nothing it did not test before. Charging reductions to a
+    // profile no one asked for writes to no table (`note_reductions`).
+    const bool debugging = debug_on();
+    const bool prof = p.runtime().profiling_for(p.id()) || debugging;
     Jit* const work_jit = p.runtime().jit();
     const bool sample_work = work_jit && work_jit->samples_work();
     // `slice_spent` is how a nested force says the budget ran out while it was
@@ -3627,6 +3634,7 @@ void run_process(Process& p, int64_t budget) {
                 // is what makes a profile read like the source: a reduction
                 // belongs to the code that asked for it.
                 if (prof) {
+                    if (debugging) debug_eval(p);
                     // The frame is read before the step, because the step is
                     // what changes it, and the bytes after, because they are
                     // what the step allocated.
@@ -3642,8 +3650,12 @@ void run_process(Process& p, int64_t budget) {
                 }
                 break;
             case Mode::Return:
-                if (prof) step_return_counted(p, 0);
-                else step_return(p, 0);
+                if (prof) {
+                    step_return_counted(p, 0);
+                    if (debugging) debug_return(p);
+                } else {
+                    step_return(p, 0);
+                }
                 break;
             case Mode::Raise:
                 if (!unwind(p, 0)) {
@@ -3668,7 +3680,10 @@ void run_process(Process& p, int64_t budget) {
         // collection *may* happen, not one where it must -- and saves the
         // check on more than half of all the steps a program takes.
         if (prof) {
-            while (p.mode == Mode::Return && !p.park_requested) step_return_counted(p, 0);
+            while (p.mode == Mode::Return && !p.park_requested) {
+                step_return_counted(p, 0);
+                if (debugging) debug_return(p);
+            }
         } else {
             while (p.mode == Mode::Return && !p.park_requested) step_return(p, 0);
         }
@@ -3725,7 +3740,8 @@ bool nested_whnf(Process& p, Value v, const Value* args, uint32_t argc, Value* o
     const size_t max_stack = lim.stack;
     const size_t max_heap = lim.heap_bytes;
     const WellKnownAtoms& wk = well_known(p.runtime());
-    const bool prof = p.runtime().profiling_for(p.id());
+    const bool debugging = debug_on();
+    const bool prof = p.runtime().profiling_for(p.id()) || debugging;
     Jit* const work_jit = p.runtime().jit();
     const bool sample_work = work_jit && work_jit->samples_work();
     const size_t floor = p.conts.size();
@@ -3776,6 +3792,7 @@ bool nested_whnf(Process& p, Value v, const Value* args, uint32_t argc, Value* o
             // 214M reductions -- and a profile that cannot see them names the
             // wrong functions.
             if (prof) {
+                if (debugging) debug_eval(p);
                 const uint32_t fi = current_func(p);
                 const uint64_t a0 = p.heap().bytes_total();
                 const uint64_t n0 = p.alloc_attributed;
@@ -3788,6 +3805,7 @@ bool nested_whnf(Process& p, Value v, const Value* args, uint32_t argc, Value* o
             }
         } else if (prof) {
             step_return_counted(p, floor);
+            if (debugging) debug_return(p);
         } else {
             step_return(p, floor);
         }

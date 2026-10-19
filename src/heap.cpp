@@ -562,6 +562,8 @@ static Value init_trunk(Obj* raw, Value link, uint32_t start, uint32_t end) {
     o->pos = TRUNK_NO_POS;
     o->pad = 0;
     o->value = UNIT;
+    o->memo_key = UNIT;
+    o->memo_at = TRUNK_NO_MEMO;
     return from_obj(o);
 }
 
@@ -1363,6 +1365,7 @@ inline void for_each_slot(Obj* o, ObjType type, F&& visit) {
             auto* c = static_cast<TrunkObj*>(o);
             visit(&c->link);
             visit(&c->value);
+            visit(&c->memo_key);
             break;
         }
         case ObjType::TrunkStore: {
@@ -2887,6 +2890,7 @@ struct VerifyWalk {
                     }
                     push(c->link, v);
                     push(c->value, v);
+                    push(c->memo_key, v);
                     break;
                 }
                 case ObjType::TrunkStore: {

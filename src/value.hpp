@@ -280,7 +280,24 @@ struct TrunkObj : Obj {
     uint32_t pos;
     uint32_t pad;
     Value value;
+    /// The last association lookup made of this version: the key as it was
+    /// searched for, and the position found, -1 for none, or
+    /// `TRUNK_NO_MEMO` before any. A version's elements never change, so
+    /// this is true for as long as the version lives. A lookup of the same
+    /// key is answered from it, and so is `_trunk_recall`, which is what
+    /// lets a replace that follows a lookup find its pair without a search
+    /// of its own: either forces nothing, since the search before it forced
+    /// all a scan would. Kept on the version rather than the process
+    /// because a program's laziness asks again much later: a value a
+    /// replace made lazily is forced steps on, and looks its key up in the
+    /// version it was made against -- by then an old one, which no index
+    /// covers.
+    Value memo_key;
+    int64_t memo_at;
 };
+
+/// What `TrunkObj::memo_at` is for a version no lookup has been made of.
+inline constexpr int64_t TRUNK_NO_MEMO = INT64_MIN;
 
 /// What `TrunkObj::pos` is when a version differs from the next only in its
 /// bounds.

@@ -13,6 +13,7 @@
 #include <filesystem>
 
 #include "builtins.hpp"
+#include "debug.hpp"
 #include "image.hpp"
 #include <thread>
 #include "interp.hpp"
@@ -56,6 +57,9 @@ const char* USAGE =
     "      --stats          print reduction and heap statistics\n"
     "      --profile [n]    count reductions per function and print the hottest\n"
     "      --no-jit         stay in the interpreter\n"
+    "      --debug CMDS     run under the debugger, CMDS first (`-` for none):\n"
+    "                       break/trace/watch NAME, on NAME CMD, .., step, bt,\n"
+    "                       locals, print sN; see dream/src/debug.hpp\n"
     "      --any-target     run an image built for another platform anyway\n"
     "      --jit-threshold <n>  calls before a function is compiled\n"
     "      --precompile         compile every function the JIT can take, on every\n"
@@ -446,6 +450,13 @@ int dream_main(int argc, char** argv) {
                 profile_top = size_t(std::stoul(argv[++i]));
             }
         } else if (a == "--no-jit") {
+            use_jit = false;
+        } else if (a == "--debug") {
+            // The commands to start with, as one argument; `-` for none, to
+            // be asked at the terminal. A debugged run is interpreted: see
+            // debug.hpp.
+            const std::string script = next("--debug");
+            debug_start(script == "-" ? std::string() : script);
             use_jit = false;
         } else if (a == "--any-target") {
             any_target = true;

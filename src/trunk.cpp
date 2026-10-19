@@ -714,8 +714,31 @@ NativeResult trunk_concat(Process& p, Value, Value* args, uint32_t) {
     return answer(p, base, p.stack[base]);
 }
 
+/// Whether two keys are the same key without forcing either: the same object,
+/// or equal strings. What a lookup was asked then holds exactly.
+bool same_key(Value k, Value m) {
+    k = resolve(k);
+    m = resolve(m);
+    if (k == m) return true;
+    if (!is_obj(k, ObjType::Str) || !is_obj(m, ObjType::Str)) return false;
+    auto *a = static_cast<StrObj*>(as_obj(k)), *b = static_cast<StrObj*>(as_obj(m));
+    return a->len == b->len && std::memcmp(a->data(), b->data(), a->len) == 0;
+}
+
+/// What version `c` remembers of a lookup of `k` (`TrunkObj::memo_key`), or
+/// `TRUNK_NO_MEMO`.
+int64_t remembered(Value c, Value k) {
+    const TrunkObj* t = trunk_of(c);
+    if (t->memo_at == TRUNK_NO_MEMO || !same_key(k, t->memo_key)) return TRUNK_NO_MEMO;
+    return t->memo_at;
+}
+
 NativeResult searched(Process& p, Value* args, Ask ask, const char* who) {
     if (!is_trunk(args[1])) return not_a_trunk(p, who);
+    if (ask == Ask::Lookup) {
+        const int64_t at = remembered(resolve(args[1]), args[0]);
+        if (at != TRUNK_NO_MEMO) return NativeResult::ok(make_fixnum(at));
+    }
     VouchesForGc vouch(p);
     const size_t base = p.stack.size();
     p.stack.push_back(resolve(args[1]));
@@ -723,10 +746,12 @@ NativeResult searched(Process& p, Value* args, Ask ask, const char* who) {
     p.stack.push_back(UNIT);
     int64_t got = 0;
     if (!search(p, base, ask, &got)) return failed(p, base);
-    if (ask == Ask::Lookup) {
-        p.trunk_memo_c = p.stack[base];
-        p.trunk_memo_k = p.stack[base + 1];
-        p.trunk_memo_i = got;
+    // Remembered by the version, unless it is in a shared area, which
+    // nothing writes once it is made.
+    if (ask == Ask::Lookup && !is_shared_obj(trunk_of(p.stack[base]))) {
+        TrunkObj* c = trunk_of(p.stack[base]);
+        put_field(p, c, &c->memo_key, p.stack[base + 1]);
+        c->memo_at = got;
     }
     if (ask == Ask::Contains) return answer(p, base, make_bool(got >= 0));
     return answer(p, base, make_fixnum(got));
@@ -788,23 +813,16 @@ NativeResult core_trunk_at(Process& p, Value self, Value* args, uint32_t n) { re
 NativeResult core_trunk_push(Process& p, Value self, Value* args, uint32_t n) { return trunk_push(p, self, args, n); }
 NativeResult core_trunk_set(Process& p, Value self, Value* args, uint32_t n) { return trunk_set(p, self, args, n); }
 
-/// `_trunk_recall k c`: the position the last lookup found when it was of
-/// `k` in this very version `c` (`Process::trunk_memo_c`), -1 for an empty
-/// trunk, or `()` when it cannot say. Forces nothing: `k` arrives as it is,
-/// and is the same key when it is the same object, or a string or number
-/// equal to it -- what the lookup was asked holds exactly then.
+/// `_trunk_recall k c`: the position the last lookup of `k` in this very
+/// version `c` found (`TrunkObj::memo_key`), -1 for an empty trunk, or `()`
+/// when its last lookup was not of `k`. Forces nothing: `k` arrives as it is,
+/// and is the same key when it is the same object or an equal string.
 NativeResult core_trunk_recall(Process& p, Value, Value* args, uint32_t) {
     const Value c = resolve(args[1]);
     if (!is_trunk(c)) return not_a_trunk(p, "_trunk_recall");
     if (length(trunk_of(c)) == 0) return NativeResult::ok(make_fixnum(-1));
-    if (resolve(p.trunk_memo_c) != c) return NativeResult::ok(UNIT);
-    const Value k = resolve(args[0]), m = resolve(p.trunk_memo_k);
-    bool same = k == m;
-    if (!same && is_obj(k, ObjType::Str) && is_obj(m, ObjType::Str)) {
-        auto *a = static_cast<StrObj*>(as_obj(k)), *b = static_cast<StrObj*>(as_obj(m));
-        same = a->len == b->len && std::memcmp(a->data(), b->data(), a->len) == 0;
-    }
-    return NativeResult::ok(same ? make_fixnum(p.trunk_memo_i) : UNIT);
+    const int64_t at = remembered(c, args[0]);
+    return NativeResult::ok(at != TRUNK_NO_MEMO ? make_fixnum(at) : UNIT);
 }
 
 void add_trunk_natives(std::vector<NativeDef>& members) {

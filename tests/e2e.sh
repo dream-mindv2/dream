@@ -82,6 +82,22 @@ if [[ "$missing_policy_rc" != 2 || "$missing_policy" != *'needs a value'* ]]; th
   fail=$((fail + 1))
 fi
 
+# The debugger, as a tool would drive it: a trace of a function's calls and
+# what each answers, and a stop that prints the frame, with no terminal to
+# ask. Its output is the debugger's own, on stderr, and the program's stays
+# where it was.
+if "${compile[@]}" "$HERE/programs/bignum.dr" -o "$WORK/debugged.dream" >"$WORK/debugged.compile" 2>&1; then
+  debugged="$("$dream" --debug 'trace fib_loop; on fact_loop locals, continue; continue' "$WORK/debugged.dream" 2>&1 </dev/null)"
+  if [[ "$debugged" != *'-> fib_loop('* || "$debugged" != *'<- fib_loop = '* || "$debugged" != *'-- break: fact_loop'* || "$debugged" != *'  s0 = '* ]]; then
+    echo "FAIL debugger (trace, stop or frame missing)"
+    printf '%s\n' "$debugged" | head -20 | sed 's/^/    /'
+    fail=$((fail + 1))
+  fi
+else
+  echo "FAIL debugger (compile)"
+  fail=$((fail + 1))
+fi
+
 # Each program is a case of its own, run as a job beside the others: they
 # share nothing but the compiler, which keeps what it builds (`--cache`), and
 # a case is mostly waiting on a VM. What each prints goes to a log of its own,

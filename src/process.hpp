@@ -415,15 +415,6 @@ public:
     /// the outer operation's retry must be spliced in, *below* them.
     bool force_blocked = false;
 
-    /// The last association lookup a trunk answered on this process: the
-    /// version searched, the key as it was searched for, and the position
-    /// found (-1 for none). `_trunk_recall` answers from it, which is what
-    /// lets a replace that follows a lookup of the same key on the same
-    /// version find its pair without a search of its own -- forcing nothing,
-    /// since the lookup forced everything the replace's scan would.
-    Value trunk_memo_c = UNIT;
-    Value trunk_memo_k = UNIT;
-    int64_t trunk_memo_i = -1;
     size_t force_resume_at = 0;
 
     /// `DREAM_JIT_CHECK_EFFECTS`: what each compiled call on this process's

@@ -368,8 +368,6 @@ void Process::visit_roots(Heap& heap) {
     for (Value& g : globals) {
         if (g != NIL_SLOT) heap.forward(&g);
     }
-    heap.forward(&trunk_memo_c);
-    heap.forward(&trunk_memo_k);
     for (Value& v : native_cache) {
         if (v != NIL_SLOT) heap.forward(&v);
     }

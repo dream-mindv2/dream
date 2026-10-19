@@ -748,6 +748,7 @@ set(DREAM_SOURCES
   src/builtins.cpp
   src/trunk.cpp
   src/pack.cpp
+  src/debug.cpp
   src/ffi.cpp
   src/io.cpp
   src/digest.cpp

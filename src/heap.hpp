@@ -173,6 +173,9 @@ public:
     Value make_map_leaf(uint64_t hash, Value key, Value value, Value next);
     Value make_closure(uint32_t func, uint32_t ncaps);
     Value make_thunk(uint32_t node, Value frame);
+    /// A flat suspension of `node` holding `nvalues` values, which the caller
+    /// writes before anything can collect; see `ThunkObj`.
+    Value make_flat_thunk(uint32_t node, Value closure, uint32_t nvalues);
     Value make_frame(Value closure, uint32_t nslots);
     Value make_pap(Value fn, uint32_t nargs);
     Value make_error(Value kind, Value payload, Value where = UNIT);

@@ -84,6 +84,68 @@ void ContStack::regrow(size_t want) {
     cap_ = want;
 }
 
+FrameStack::~FrameStack() {
+    std::free(frames_);
+    for (Chunk& c : chunks_) std::free(c.base);
+}
+
+void FrameStack::release_from(uint32_t depth) {
+    while (size_ > floor_ && frames_[size_ - 1]->pad >= depth) {
+        auto* f = reinterpret_cast<uint8_t*>(frames_[--size_]);
+        // Frames are taken in order through the chunks, so the one a frame
+        // came from is this chunk or one before it.
+        while (f < chunks_[chunk_].base || f >= chunks_[chunk_].base + chunks_[chunk_].cap) --chunk_;
+        top_ = f;
+        end_ = chunks_[chunk_].base + chunks_[chunk_].cap;
+    }
+    release_at_ = size_ > floor_ ? frames_[size_ - 1]->pad : 0;
+}
+
+void FrameStack::next_chunk(size_t bytes) {
+    // The space left in this chunk waits until the frames before it are
+    // gone; the next chunk is reused when it is large enough, and replaced
+    // when it is not.
+    size_t at = top_ ? chunk_ + 1 : 0;
+    if (at < chunks_.size() && chunks_[at].cap < bytes) {
+        for (size_t i = at; i < chunks_.size(); ++i) std::free(chunks_[i].base);
+        chunks_.resize(at);
+    }
+    if (at == chunks_.size()) {
+        size_t cap = chunks_.empty() ? size_t(64) << 10 : chunks_.back().cap * 2;
+        if (cap > (size_t(16) << 20)) cap = size_t(16) << 20;
+        if (cap < bytes) cap = bytes;
+        auto* base = static_cast<uint8_t*>(std::malloc(cap));
+        if (!base) {
+            std::fprintf(stderr, "dream: out of memory growing the frame stack\n");
+            std::abort();
+        }
+        chunks_.push_back(Chunk{base, cap});
+    }
+    chunk_ = at;
+    top_ = chunks_[at].base;
+    end_ = top_ + chunks_[at].cap;
+}
+
+void FrameStack::grow() {
+    const size_t want = cap_ ? cap_ * 2 : 256;
+    auto** next = static_cast<FrameObj**>(std::realloc(frames_, want * sizeof(FrameObj*)));
+    if (!next) {
+        std::fprintf(stderr, "dream: out of memory growing the frame stack\n");
+        std::abort();
+    }
+    frames_ = next;
+    cap_ = want;
+}
+
+void FrameStack::clear() {
+    size_ = 0;
+    floor_ = 0;
+    release_at_ = 0;
+    chunk_ = 0;
+    top_ = chunks_.empty() ? nullptr : chunks_[0].base;
+    end_ = chunks_.empty() ? nullptr : chunks_[0].base + chunks_[0].cap;
+}
+
 void Mailbox::push(std::unique_ptr<Message> m) {
     std::lock_guard<std::mutex> g(mutex_);
     queue_.push_back(std::move(m));
@@ -273,15 +335,36 @@ void Process::visit_roots(Heap& heap) {
     // it exists so that the handful of C++ frames that genuinely do hold a
     // `Value` across a collection can be written down rather than reasoned
     // about -- see `Process::pins`.
-    heap.forward(&frame);
+    // The frame register may name a frame on `frames` that has been dropped,
+    // and so may a pin -- a nested force saves the frame it will put back --
+    // so neither is read as an object until it is known not to be one of
+    // those (`FrameStack::holds`).
+    if (!frames.holds(frame)) heap.forward(&frame);
     heap.forward(&result);
     heap.forward(&exit_value);
     for (Value& v : stack) heap.forward(&v);
     // Usually empty: a native call pins its callee only when that callee is a
     // host object rather than a builtin immediate, and nothing else pins at all
     // unless a native has been over-applied.
-    for (Value& v : pins) heap.forward(&v);
-    for (Cont& c : conts) heap.forward(&c.v1);
+    for (Value& v : pins) {
+        if (!frames.holds(v)) heap.forward(&v);
+    }
+    // A continuation names only frames still live, so its header can be
+    // read; one on `frames` is skipped, being visited below as itself.
+    for (Cont& c : conts) {
+        if (is_obj(c.v1, ObjType::Frame) && (as_obj(c.v1)->gc & GC_SHARED)) continue;
+        heap.forward(&c.v1);
+    }
+    // The interpreter's frames are not on the heap, and are roots: see
+    // `FrameStack`. Some may be done with and not yet dropped, which costs a
+    // scan and keeps what they hold one collection longer, and nothing else.
+    frames.each([&](FrameObj* f) {
+        heap.forward(&f->closure);
+        Value* slots = f->slots();
+        for (uint32_t i = 0; i < f->nslots; ++i) {
+            if (slots[i] != NIL_SLOT) heap.forward(&slots[i]);
+        }
+    });
     for (Value& g : globals) {
         if (g != NIL_SLOT) heap.forward(&g);
     }

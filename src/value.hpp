@@ -408,11 +408,30 @@ struct ClosureObj : Obj {
 /// A suspension. Forcing overwrites it in place with an Indirect, so every
 /// sharer of the pointer sees the result -- this is what makes laziness
 /// share work rather than repeat it.
+/// A suspension: a node, and what it is evaluated against.
+///
+/// Made against a heap frame -- a global's, a compiled call's snapshot --
+/// `frame` is that frame. Made against an interpreter frame, which lives on
+/// its process's `FrameStack` and dies with its call, it is *flat*: `frame`
+/// holds the frame's closure, and the values of the slots the node reads
+/// follow the object (`Image::flat_shape` says which slots, in order). Forcing
+/// one builds a frame from them. `aux` is what tells the two apart -- 0, or
+/// one more than the number of values -- because `aux` is the one field a
+/// thunk being overwritten as an `Indirect` never has written over, and a
+/// concurrent mark may read a thunk at that moment.
+///
+/// A *hole* (node `HOLE_NODE`) is what a flat suspension holds for a slot not
+/// bound yet when it was made -- `let rec` reaching forward -- and what that
+/// slot holds until the binding fills the hole with its value.
 struct ThunkObj : Obj {
     uint32_t node;
     uint32_t pad;
     Value frame;
+    Value* values() { return reinterpret_cast<Value*>(this + 1); }
 };
+inline constexpr uint32_t HOLE_NODE = 0xFFFFFFFEu;
+inline bool thunk_flat(const ThunkObj* t) { return t->aux != 0; }
+inline uint32_t thunk_value_count(const ThunkObj* t) { return t->aux ? uint32_t(t->aux) - 1 : 0; }
 
 struct IndirectObj : Obj {
     Value target;

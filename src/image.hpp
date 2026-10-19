@@ -9,7 +9,9 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include "primitive_ops.hpp"
 #include <string>
 #include <string_view>
@@ -265,6 +267,18 @@ public:
     /// else it does (`strict_args_` in image.cpp), so a caller may evaluate
     /// that argument instead of suspending it.
     uint32_t strict_args(uint32_t function) const { return strict_args_[function]; }
+    /// What a flat suspension of `node` copies out of its frame (see
+    /// `ThunkObj`): a count, then that many slots, each the index of a slot the
+    /// expression reads, with `FLAT_BOUND` set when the expression also binds
+    /// it -- a slot reused by a name inside it, which is not a binding the
+    /// suspension waits on. Worked out the first time a suspension of the node
+    /// is made, by whichever process gets there, and published with a
+    /// compare-and-swap so that every later one is a load.
+    const uint32_t* flat_shape(uint32_t node) const {
+        const uint32_t* s = flat_shapes_[node].load(std::memory_order_acquire);
+        return s ? s : compute_flat_shape(node);
+    }
+    static constexpr uint32_t FLAT_BOUND = 1u << 31;
     /// The value the image's `VMOP` section gives `key`, or 0 when it gives
     /// none -- every setting there is a size or a count, and 0 is neither.
     uint64_t vm_option(uint32_t key) const {
@@ -367,6 +381,8 @@ public:
     int find_global(const char* name) const;
 
 private:
+    const uint32_t* compute_flat_shape(uint32_t node) const;
+    mutable std::unique_ptr<std::atomic<const uint32_t*>[]> flat_shapes_;
     std::vector<Accessor> accessors_;
     std::vector<uint32_t> strict_args_;
     /// `TYPE`, spread out by function so that asking costs an index. Empty

@@ -164,6 +164,135 @@ private:
     size_t cap_ = 0;
 };
 
+/// The interpreter's frames, one stack per process, outside the heap.
+///
+/// A frame was a heap object, 44% of everything a self-compile allocated, and
+/// half of those were kept alive past their call by a suspension made in them
+/// -- so promoted, copied and marked. A suspension now copies the values it
+/// reads (`flat_thunk` in interp.cpp) and a closure always did, so nothing on
+/// the heap points at an interpreter frame and its life is exactly its call's:
+/// it is reachable from the current frame and the continuations, and from
+/// nothing that outlives them. See "Suspensions that hold values, and frames
+/// on a stack" in docs/notes/vm-performance.md.
+///
+/// A frame records in `pad` the continuation depth it was made at. Every
+/// continuation that names a frame was pushed while that frame was current, so
+/// it sits at or above that depth: once the stack is below it, nothing can
+/// reach the frame. Two places act on that. `step_return` drops frames made
+/// deeper than the stack now is, and making a frame drops those made at the
+/// depth it is made at or deeper -- a tail call's caller, whose last use was
+/// building the callee's arguments. A cont spliced in below (`insert_at`) only
+/// makes a recorded depth an underestimate, which keeps a frame a little
+/// longer and never frees one early.
+///
+/// A nested machine loop (`nested_whnf`) raises `floor` to the frames it was
+/// started over, because the code that started it is still in the middle of
+/// using its frame at a depth the nested loop will reach again.
+///
+/// The frames carry `GC_SHARED`, which every path of the collector already
+/// reads as "not this heap's, do not move or trace": they are roots instead,
+/// visited by `Process::visit_roots`, so a young value in one is found and
+/// updated without a barrier. Memory comes in chunks that are kept, so a deep
+/// recursion's pages are reused rather than returned and asked for again.
+class FrameStack {
+public:
+    FrameStack() = default;
+    ~FrameStack();
+    FrameStack(const FrameStack&) = delete;
+    FrameStack& operator=(const FrameStack&) = delete;
+
+    /// A frame of `nslots` slots made at continuation depth `depth`, the first
+    /// `filled` of which the caller writes. Frames at `depth` or deeper are
+    /// dropped first (see above).
+#if defined(_MSC_VER)
+    __forceinline FrameObj* push
+#else
+    __attribute__((always_inline)) inline FrameObj* push
+#endif
+    (Value closure, uint32_t nslots, uint32_t filled, uint32_t depth) {
+        if (depth <= release_at_) release_from(depth);
+        const size_t bytes = sizeof(FrameObj) + size_t(nslots) * sizeof(Value);
+        if (size_t(end_ - top_) < bytes) next_chunk(bytes);
+        auto* o = reinterpret_cast<FrameObj*>(top_);
+        top_ += bytes;
+        o->type = ObjType::Frame;
+        o->gc = GC_SHARED;
+        o->aux = 0;
+        o->bytes = uint32_t(bytes);
+        o->closure = closure;
+        o->nslots = nslots;
+        o->pad = depth;
+        Value* slots = o->slots();
+        for (uint32_t i = filled; i < nslots; ++i) slots[i] = NIL_SLOT;
+        if (size_ == cap_) grow();
+        frames_[size_++] = o;
+        release_at_ = depth;
+        return o;
+    }
+
+    /// Drop the frames made deeper than `depth`: the continuation stack has
+    /// come back below them.
+    void returned_to(size_t depth) {
+        if (depth < release_at_) release_from(uint32_t(depth) + 1);
+    }
+
+    /// The frames from here up are a nested loop's; see `floor`.
+    size_t raise_floor() {
+        const size_t was = floor_;
+        floor_ = size_;
+        release_at_ = 0;
+        return was;
+    }
+    void restore_floor(size_t was) {
+        floor_ = was;
+        release_at_ = size_ > floor_ ? frames_[size_ - 1]->pad : 0;
+    }
+
+    template <class F>
+    void each(F&& f) {
+        for (size_t i = 0; i < size_; ++i) f(frames_[i]);
+    }
+    size_t size() const { return size_; }
+    /// Whether `v` points into this stack's memory. The machine's frame
+    /// register, and a frame a nested force saved to put back, may name a
+    /// frame that has been dropped and its memory given to another, where a
+    /// header is no longer a header: the collector asks this rather than read
+    /// one. A frame here never needs forwarding anyway.
+    bool holds(Value v) const {
+        if (!is_ptr(v)) return false;
+        auto* at = reinterpret_cast<const uint8_t*>(as_obj(v));
+        for (const Chunk& c : chunks_) {
+            if (at >= c.base && at < c.base + c.cap) return true;
+        }
+        return false;
+    }
+    /// Everything at once, for a process that is done.
+    void clear();
+
+private:
+    void release_from(uint32_t depth);
+    void next_chunk(size_t bytes);
+    void grow();
+
+    struct Chunk {
+        uint8_t* base;
+        size_t cap;
+    };
+    FrameObj** frames_ = nullptr;
+    size_t size_ = 0;
+    size_t cap_ = 0;
+    size_t floor_ = 0;
+    /// The depth of the top frame when it may be dropped, else 0: a frame
+    /// made at depth `d` is dropped by a push at a depth `<= d` or a return
+    /// below `d`, and one compare against this is all either costs when there
+    /// is nothing to drop.
+    uint32_t release_at_ = 0;
+    std::vector<Chunk> chunks_;
+    size_t chunk_ = 0;
+    uint8_t* top_ = nullptr;
+    uint8_t* end_ = nullptr;
+};
+
 // ---------------------------------------------------------------------------
 // Messages
 // ---------------------------------------------------------------------------
@@ -415,6 +544,12 @@ public:
 
     std::vector<Value> stack;
     ContStack conts;
+    FrameStack frames;
+
+    /// A frame for a call about to be entered, on `frames`. See `FrameStack`.
+    Value push_frame(Value closure, uint32_t nslots, uint32_t filled = 0) {
+        return from_obj(frames.push(closure, nslots, filled, uint32_t(conts.size())));
+    }
 
     // --- scheduling ---
     std::atomic<ProcStatus> status{ProcStatus::Runnable};

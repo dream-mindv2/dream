@@ -10,6 +10,7 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <cstring>
 #include <bit>
 #include <limits>
@@ -229,7 +230,59 @@ void unmap_image(void* address, size_t size) {
 }
 }
 
+/// The slots an expression reads from its frame, and which of them it binds
+/// itself. Function bodies are not walked -- a closure's are its own -- but a
+/// closure made here reads the slots it captures, so those count.
+const uint32_t* Image::compute_flat_shape(uint32_t root) const {
+    std::vector<uint8_t> read, bound;
+    std::vector<uint32_t> work{root}, kids;
+    auto mark = [](std::vector<uint8_t>& v, uint32_t i) {
+        if (v.size() <= i) v.resize(i + 1, 0);
+        v[i] = 1;
+    };
+    while (!work.empty()) {
+        const uint32_t idx = work.back();
+        work.pop_back();
+        if (idx == NO_NODE) continue;
+        const Node& n = node(idx);
+        switch (Op(n.op)) {
+            case Op::Local: mark(read, n.a); break;
+            case Op::Bind: mark(bound, n.a); break;
+            case Op::Try: mark(bound, n.c); break;
+            case Op::MakeClosure: case Op::MakeThunk: {
+                const FuncRec& f = func(n.a);
+                for (uint32_t i = 0; i < f.n_captures; ++i) {
+                    const uint32_t desc = kid(f.captures_off + i);
+                    if (!(desc & CAP_FROM_CAPTURE)) mark(read, desc);
+                }
+                break;
+            }
+            default: break;
+        }
+        kids.clear();
+        node_children(n, kids_, kids);
+        for (uint32_t k : kids) work.push_back(k);
+    }
+    std::vector<uint32_t> out{0};
+    for (uint32_t i = 0; i < read.size(); ++i) {
+        if (!read[i]) continue;
+        out.push_back(i | (i < bound.size() && bound[i] ? FLAT_BOUND : 0));
+    }
+    out[0] = uint32_t(out.size() - 1);
+    auto* shape = new uint32_t[out.size()];
+    std::copy(out.begin(), out.end(), shape);
+    const uint32_t* expected = nullptr;
+    if (!flat_shapes_[root].compare_exchange_strong(expected, shape, std::memory_order_acq_rel)) {
+        delete[] shape;
+        return expected;
+    }
+    return shape;
+}
+
 Image::~Image() {
+    if (flat_shapes_) {
+        for (uint32_t i = 0; i < n_nodes_; ++i) delete[] flat_shapes_[i].load(std::memory_order_relaxed);
+    }
     if (owns_mapping_ && mapping_) {
         unmap_image(mapping_, mapping_size_);
     }
@@ -463,6 +516,7 @@ bool Image::parse(std::string& error) {
     // nothing of the callee's has run yet either way, and the strict
     // parameters are forced in the same order. See "Strict arguments are
     // evaluated where they stand" in docs/notes/vm-performance.md.
+    flat_shapes_.reset(new std::atomic<const uint32_t*>[n_nodes_]());
     strict_args_.assign(n_funcs_, 0);
     for (uint32_t i = 0; i < n_funcs_; ++i) {
         const auto& f = funcs_[i];

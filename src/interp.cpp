@@ -72,6 +72,85 @@ inline void do_raise(Process& p, Value err) {
     p.result = err;
 }
 
+/// One of a process's interpreter frames, which die with their call (see
+/// `FrameStack`), rather than one on the heap.
+inline bool stack_frame(Value frame) { return (as_obj(frame)->gc & GC_SHARED) != 0; }
+
+/// A suspension of `node` that carries the values it reads from `frame`
+/// instead of the frame (see `ThunkObj`). Nothing is lost by copying them now:
+/// a slot is not bound again while something made against its binding can
+/// still read it, which is the rule the compiler's slot allocation keeps
+/// already, since a suspension used to read the frame when it was forced.
+///
+/// The one slot that can be read *before* it is bound is a `let rec`'s: a
+/// closure that refers to itself, or to one bound after it. `self` is the
+/// slot this suspension is about to be bound to, and reads as the suspension;
+/// any other slot not bound yet gets a hole, which the slot keeps until its
+/// binding fills it (`bind_slot`). A self-compile makes 84 million of these
+/// and not one reads a slot forward outside a `let rec`.
+Value flat_thunk(Process& p, uint32_t node, Value frame, uint32_t self = NO_NODE) {
+    const Image& img = img_of(p);
+    const uint32_t* shape = img.flat_shape(node);
+    const uint32_t k = shape[0];
+    auto* fo = static_cast<FrameObj*>(as_obj(frame));
+    // No collection can happen between here and the return: allocation never
+    // collects, so `fo` and `t` stay good across the holes made below.
+    Value th = p.heap().make_flat_thunk(node, fo->closure, k);
+    auto* t = static_cast<ThunkObj*>(as_obj(th));
+    for (uint32_t i = 0; i < k; ++i) {
+        const uint32_t slot = shape[1 + i] & ~Image::FLAT_BOUND;
+        Value v = slot < fo->nslots ? fo->slots()[slot] : NIL_SLOT;
+        if (slot == self) {
+            v = th;
+        } else if (v == NIL_SLOT && !(shape[1 + i] & Image::FLAT_BOUND) && slot < fo->nslots) {
+            v = p.heap().make_thunk(HOLE_NODE, UNIT);
+            fo->slots()[slot] = v;
+        }
+        t->values()[i] = v;
+    }
+    return th;
+}
+
+/// Bind a slot, filling the hole a flat suspension left in it if one read the
+/// slot before this binding (see `flat_thunk`): the hole becomes an
+/// indirection to the value, so the suspension holding it sees the binding.
+inline void bind_slot(Process& p, FrameObj* fo, uint32_t slot, Value v) {
+    const Value old = fo->slots()[slot];
+    if (is_ptr(old) && obj_type(as_obj(old)) == ObjType::Thunk &&
+        static_cast<ThunkObj*>(as_obj(old))->node == HOLE_NODE) {
+        Obj* hole = as_obj(old);
+        p.heap().remember_if_old(hole, v);
+        std::atomic_ref<Value>(static_cast<IndirectObj*>(hole)->target).store(v, std::memory_order_relaxed);
+        obj_type_store_release(hole, ObjType::Indirect);
+    }
+    value_slot_store(&fo->slots()[slot], v);
+    p.heap().remember_if_old(fo, v);
+}
+
+/// Evaluate a suspension that `enter` has blackholed and put an update under.
+/// A flat one gets a frame of its function's size, holding the values it
+/// carried in the slots they came from.
+inline void run_suspension(Process& p, ThunkObj* th) {
+    if (!thunk_flat(th)) {
+        if (th->node == HOLE_NODE) {
+            do_raise(p, raise_error(p, well_known(p.runtime()).loop, "value depends on itself"));
+            return;
+        }
+        eval_node(p, th->node, th->frame);
+        return;
+    }
+    const Image& img = img_of(p);
+    const Value closure = th->frame;
+    if (!is_obj(closure, ObjType::Closure)) p.unreachable("a flat suspension without a closure");
+    const uint32_t nslots = img.func(static_cast<ClosureObj*>(as_obj(closure))->func).slots;
+    Value fr = p.push_frame(closure, nslots);
+    Value* slots = static_cast<FrameObj*>(as_obj(fr))->slots();
+    const uint32_t* shape = img.flat_shape(th->node);
+    const uint32_t k = shape[0];
+    for (uint32_t i = 0; i < k; ++i) slots[shape[1 + i] & ~Image::FLAT_BOUND] = th->values()[i];
+    eval_node(p, th->node, fr);
+}
+
 inline void push_cont(Process& p, ContKind k, uint32_t a, uint32_t b, uint32_t c, Value v1) {
     p.conts.push_back(Cont{k, 0, 0, a, b, c, v1});
 }
@@ -571,8 +650,11 @@ void enter_function(Process& p, uint32_t func_index, const FuncRec& f, Value fra
             // once it has finished. Compiled bodies are pure, and forcing is
             // memoised, so the second run repeats no effect.
             if (p.park_requested) {
+                // The retry goes in below the suspended force, where a frame
+                // on the process's stack could be dropped under it, so it
+                // takes a copy on the heap.
                 push_retry(p, ContKind::EnterRetry, func_index, uint32_t(stack_before),
-                           effect_retry, frame);
+                           effect_retry, stack_frame(frame) ? heap_frame(p, frame) : frame);
                 return;  // the park left the mode at Return
             }
             if (status == JitOk) {
@@ -660,7 +742,7 @@ void do_apply(Process& p, Value callee, uint32_t argc) {
             // A zero-arity function -- a thunk object or an impure action.
             // It consumes no arguments; any that were supplied apply to its
             // result, so `main! ()` and `go!` both do the right thing.
-            Value fr = p.heap().make_frame(callee, f.slots);
+            Value fr = p.push_frame(callee, f.slots);
             if (argc > 0) push_cont(p, ContKind::ApplyTo, argc, 0, 0, UNIT);
             enter_function(p, cl->func, f, fr);
             return;
@@ -674,7 +756,7 @@ void do_apply(Process& p, Value callee, uint32_t argc) {
             return;
         }
 
-        Value fr = p.heap().make_frame_filling(callee, f.slots, arity);
+        Value fr = p.push_frame(callee, f.slots, arity);
         auto* fo = static_cast<FrameObj*>(as_obj(fr));
         for (uint32_t i = 0; i < arity; ++i) fo->slots()[i] = p.stack[base + i];
 
@@ -768,7 +850,7 @@ void resume_native(Process& p, Value callee, uint32_t base, uint32_t argc, uint3
             }
             obj_type_store(as_obj(thunk), ObjType::Blackhole);
             push_cont(p, ContKind::UpdateThunk, 0, 0, 0, thunk);
-            eval_node(p, t->node, t->frame);
+            run_suspension(p, t);
             return;
         }
     }
@@ -916,7 +998,7 @@ void fill_closure_args(Process& p, uint32_t call_node, uint32_t mask, uint32_t b
     Value fn = resolve(callee);
     auto* cl = static_cast<ClosureObj*>(as_obj(fn));
     const FuncRec& f = img.func(cl->func);
-    Value fr = p.heap().make_frame_filling(fn, f.slots, f.arity);
+    Value fr = p.push_frame(fn, f.slots, f.arity);
     auto* fo = static_cast<FrameObj*>(as_obj(fr));
     const Value* args = &p.stack[base];
     for (uint32_t i = 0; i < n.c; ++i) fo->slots()[i] = args[i];
@@ -973,13 +1055,11 @@ void enter(Process& p, Value v) {
     ObjType t = as_obj(v)->type;
     if (t == ObjType::Thunk) {
         auto* th = static_cast<ThunkObj*>(as_obj(v));
-        uint32_t node = th->node;
-        Value fr = th->frame;
         // Blackhole first: if evaluating this thunk reaches it again, we have
         // a value defined in terms of itself and must say so rather than spin.
         obj_type_store(as_obj(v), ObjType::Blackhole);
         push_cont(p, ContKind::UpdateThunk, 0, 0, 0, v);
-        eval_node(p, node, fr);
+        run_suspension(p, th);
         return;
     }
     if (t == ObjType::Blackhole) {
@@ -1024,14 +1104,14 @@ void advance_block(Process& p, uint32_t kids_off, uint32_t count, uint32_t index
                 // it is still empty. Suspending it instead means the slot
                 // already holds this thunk by the time the closure is made, so
                 // the capture sees something that resolves to the closure.
-                bound = p.heap().make_thunk(sn.b, frame);
+                bound = stack_frame(frame) ? flat_thunk(p, sn.b, frame, sn.a)
+                                           : p.heap().make_thunk(sn.b, frame);
             } else {
                 bound = thunk_for(p, sn.b, frame);
             }
-            // A frame may have outlived its call -- one held by a long-lived
-            // thunk -- so the bind can point an old object at a young one.
-            value_slot_store(&fo->slots()[sn.a], bound);
-            p.heap().remember_if_old(fo, bound);
+            // A heap frame may have outlived its call -- a global's, held by
+            // its value -- so the bind can point an old object at a young one.
+            bind_slot(p, fo, sn.a, bound);
             // A binding is lazy unless the compiler marked it strict, which it
             // does exactly when the bound expression has effects that must
             // happen where they were written.
@@ -2247,7 +2327,7 @@ void step_eval(Process& p) {
                 // rule the entry point `main!` follows.
                 if (f.arity == 0 && (f.flags & FN_IMPURE) && !(f.flags & FN_GLOBAL_VALUE)) {
                     Value cl = global_value(p, n.a);
-                    Value fr = p.heap().make_frame(cl, f.slots);
+                    Value fr = p.push_frame(cl, f.slots);
                     eval_node(p, f.body, fr);
                     return;
                 }
@@ -2353,13 +2433,26 @@ void step_eval(Process& p) {
                         fill_closure_args(p, p.node, mask, uint32_t(p.stack.size()), 0, frame);
                         return;
                     }
-                    Value fr = p.heap().make_frame_filling(fn, f.slots, f.arity);
-                    auto* fo = static_cast<FrameObj*>(as_obj(fr));
-                    // Safe to hold `fo` across these: allocation never
-                    // collects, which is the rule the whole machine rests on.
-                    for (uint32_t i = 0; i < n.c; ++i) {
-                        fo->slots()[i] = thunk_for(p, kids[i], frame);
+                    // The arguments are made before the frame, because a call
+                    // in tail position makes its frame where the caller's was
+                    // (see `FrameStack`) and they are read out of the caller's.
+                    // Held in a local array, since allocation never collects
+                    // -- the rule the whole machine rests on.
+                    if (n.c <= 8) {
+                        Value args[8];
+                        for (uint32_t i = 0; i < n.c; ++i) args[i] = thunk_for(p, kids[i], frame);
+                        Value fr = p.push_frame(fn, f.slots, f.arity);
+                        auto* fo = static_cast<FrameObj*>(as_obj(fr));
+                        for (uint32_t i = 0; i < n.c; ++i) fo->slots()[i] = args[i];
+                        enter_function(p, cl->func, f, fr);
+                        return;
                     }
+                    const size_t base = p.stack.size();
+                    for (uint32_t i = 0; i < n.c; ++i) p.stack.push_back(thunk_for(p, kids[i], frame));
+                    Value fr = p.push_frame(fn, f.slots, f.arity);
+                    auto* fo = static_cast<FrameObj*>(as_obj(fr));
+                    for (uint32_t i = 0; i < n.c; ++i) fo->slots()[i] = p.stack[base + i];
+                    p.stack.resize(base);
                     enter_function(p, cl->func, f, fr);
                     return;
                 }
@@ -2409,8 +2502,7 @@ void step_eval(Process& p) {
         case Op::Bind: {
             auto* fo = static_cast<FrameObj*>(as_obj(frame));
             Value bound = thunk_for(p, n.b, frame);
-            value_slot_store(&fo->slots()[n.a], bound);
-            p.heap().remember_if_old(fo, bound);
+            bind_slot(p, fo, n.a, bound);
             ret(p, UNIT);
             return;
         }
@@ -2585,6 +2677,9 @@ void step_return(Process& p, size_t floor) {
     }
     Cont c = p.conts.back();
     p.conts.pop_back();
+    // Nothing still to run was pushed after the frames made deeper than this,
+    // so they are done with: see `FrameStack`.
+    p.frames.returned_to(p.conts.size());
 
     if (c.kind == ContKind::UpdateThunk) {
         // Overwrite the thunk in place so every sharer sees the result.
@@ -2687,8 +2782,7 @@ void step_return(Process& p, size_t floor) {
             const Image& img = img_of(p);
             const Node& sn = img.node(img.kid(c.a + c.c));
             auto* fo = static_cast<FrameObj*>(as_obj(c.v1));
-            value_slot_store(&fo->slots()[sn.a], p.result);
-            p.heap().remember_if_old(fo, p.result);
+            bind_slot(p, fo, sn.a, p.result);
             advance_block(p, c.a, c.b, c.c + 1, c.v1);
             return;
         }
@@ -2810,6 +2904,8 @@ void step_return(Process& p, size_t floor) {
 /// The function a frame belongs to, or `NO_NODE` for a frame that has none
 /// to name -- one copied from another heap before its closure was.
 uint32_t frame_function(Value frame) {
+    // A flat suspension holds its frame's closure where the frame would be.
+    if (is_obj(frame, ObjType::Closure)) return static_cast<ClosureObj*>(as_obj(frame))->func;
     if (!is_obj(frame, ObjType::Frame)) return NO_NODE;
     Value cl = static_cast<FrameObj*>(as_obj(frame))->closure;
     if (!is_obj(cl, ObjType::Closure)) return NO_NODE;
@@ -2992,85 +3088,6 @@ const Image* g_thunk_sites_image = nullptr;
 extern const bool g_probe_frames;
 extern std::atomic<uint64_t> g_frames_made, g_frame_bytes, g_frames_held, g_held_bytes;
 
-// What a suspension would carry if it held the values it reads rather than
-// its frame: the distinct slots its expression reads and does not bind
-// itself, and the closure captures it reads, worked out once per node. With
-// `DREAM_PROBE_FRAMES`, the report says what a run would allocate if frames
-// lived on a stack and suspensions copied their free values, as closures do.
-std::mutex g_flat_mutex;
-std::vector<int32_t> g_flat_free;
-const Image* g_flat_image = nullptr;
-std::atomic<uint64_t> g_flat_thunks{0}, g_flat_values{0};
-
-std::vector<std::vector<uint32_t>> g_flat_slots;
-std::atomic<uint64_t> g_flat_forward{0};
-
-int32_t flat_free_count(const Image& img, uint32_t root, std::vector<uint32_t>* slots_out) {
-    std::vector<uint8_t> read, bound;
-    std::vector<uint32_t> caps;
-    std::vector<uint32_t> work{root}, kids;
-    auto mark = [](std::vector<uint8_t>& v, uint32_t i) { if (v.size() <= i) v.resize(i + 1, 0); v[i] = 1; };
-    while (!work.empty()) {
-        uint32_t idx = work.back();
-        work.pop_back();
-        if (idx == NO_NODE) continue;
-        const Node& n = img.node(idx);
-        switch (Op(n.op)) {
-            case Op::Local: mark(read, n.a); break;
-            case Op::Capture: caps.push_back(n.a); break;
-            case Op::Bind: mark(bound, n.a); break;
-            case Op::MakeClosure: case Op::MakeThunk: {
-                const FuncRec& f = img.func(n.a);
-                for (uint32_t i = 0; i < f.n_captures; ++i) {
-                    uint32_t desc = img.kid(f.captures_off + i);
-                    if (desc & CAP_FROM_CAPTURE) caps.push_back(desc & ~CAP_FROM_CAPTURE);
-                    else mark(read, desc);
-                }
-                break;
-            }
-            default: break;
-        }
-        kids.clear();
-        node_children(n, img.kids_at(0), kids);
-        for (uint32_t k : kids) work.push_back(k);
-    }
-    int32_t count = 0;
-    for (uint32_t i = 0; i < read.size(); ++i)
-        if (read[i] && !(i < bound.size() && bound[i])) {
-            ++count;
-            slots_out->push_back(i);
-        }
-    std::sort(caps.begin(), caps.end());
-    count += int32_t(std::unique(caps.begin(), caps.end()) - caps.begin());
-    return count;
-}
-
-void note_flat_thunk(const Image& img, uint32_t node, Value frame) {
-    int32_t k;
-    bool forward = false;
-    {
-        std::lock_guard<std::mutex> g(g_flat_mutex);
-        if (g_flat_image != &img) {
-            g_flat_image = &img;
-            g_flat_free.assign(img.node_count(), -1);
-            g_flat_slots.assign(img.node_count(), {});
-        }
-        if (node >= g_flat_free.size()) return;
-        if (g_flat_free[node] < 0) g_flat_free[node] = flat_free_count(img, node, &g_flat_slots[node]);
-        k = g_flat_free[node];
-        // A slot it reads that is not bound yet: copying its value now would
-        // copy nothing, so this suspension would still need its frame.
-        if (is_obj(frame, ObjType::Frame)) {
-            auto* f = static_cast<FrameObj*>(as_obj(frame));
-            for (uint32_t slot : g_flat_slots[node])
-                if (slot < f->nslots && f->slots()[slot] == NIL_SLOT) forward = true;
-        }
-    }
-    if (forward) g_flat_forward.fetch_add(1, std::memory_order_relaxed);
-    g_flat_thunks.fetch_add(1, std::memory_order_relaxed);
-    g_flat_values.fetch_add(uint64_t(k), std::memory_order_relaxed);
-}
-
 void dbg_dump_thunks() {
     if (g_probe_frames) {
         const uint64_t made = g_frames_made.load(), bytes = g_frame_bytes.load();
@@ -3080,15 +3097,6 @@ void dbg_dump_thunks() {
                      (unsigned long long)made, (unsigned long long)bytes, (unsigned long long)held,
                      (unsigned long long)held_bytes, (unsigned long long)(made - held),
                      (unsigned long long)(bytes - held_bytes), bytes ? 100.0 * double(bytes - held_bytes) / double(bytes) : 0.0);
-        const uint64_t thunks = g_flat_thunks.load(), values = g_flat_values.load();
-        // A flat suspension: a header, the node and a count, and a word per value.
-        const uint64_t flat = thunks * 16 + values * 8, now = thunks * 24;
-        std::fprintf(stderr, "; suspensions made by the interpreter: %llu, reading %.2f values each on average; "
-                             "as flat suspensions %llu bytes against %llu now plus every frame they hold\n",
-                     (unsigned long long)thunks, thunks ? double(values) / double(thunks) : 0.0,
-                     (unsigned long long)flat, (unsigned long long)now);
-        std::fprintf(stderr, "; of them %llu read a slot not yet bound when they were made\n",
-                     (unsigned long long)g_flat_forward.load());
     }
     if (!g_probe_thunk) return;
     for (size_t i = 0; i < 64; ++i) {
@@ -3120,6 +3128,17 @@ uint32_t match_at_builtin() {
         return UINT32_MAX;
     }();
     return id;
+}
+
+/// A copy on the heap of a frame on the process's stack, for what has to
+/// keep a frame past the point its stack could drop it: compiled code's
+/// snapshot (`dream_rt_adopt`) and a parked compiled call's retry.
+Value heap_frame(Process& p, Value frame) {
+    auto* from = static_cast<FrameObj*>(as_obj(frame));
+    Value fr = p.heap().make_frame_filling(from->closure, from->nslots, from->nslots);
+    auto* to = static_cast<FrameObj*>(as_obj(fr));
+    for (uint32_t i = 0; i < from->nslots; ++i) to->slots()[i] = from->slots()[i];
+    return fr;
 }
 
 Value thunk_for(Process& p, uint32_t node, Value frame) {
@@ -3302,7 +3321,6 @@ Value thunk_for(Process& p, uint32_t node, Value frame) {
         }
         default: break;
     }
-    if (g_probe_frames) note_flat_thunk(img, node, frame);
     if (g_probe_thunk) {
         g_thunk_counts[size_t(n.op) & 63].fetch_add(1, std::memory_order_relaxed);
         uint64_t func = 0xffffffffu;
@@ -3314,6 +3332,7 @@ Value thunk_for(Process& p, uint32_t node, Value frame) {
         g_thunk_sites_image = &img;
         ++g_thunk_sites[(func << 32) | node];
     }
+    if (stack_frame(frame)) return flat_thunk(p, node, frame);
     return p.heap().make_thunk(node, frame);
 }
 
@@ -3346,6 +3365,7 @@ Value global_value(Process& p, uint32_t index) {
 
 void prime_apply(Process& p, Value callee, uint32_t argc) {
     p.conts.clear();
+    p.frames.clear();
     push_cont(p, ContKind::Halt, 0, 0, 0, UNIT);
     push_cont(p, ContKind::ApplyTo, argc, 0, 0, UNIT);
     // `enter` returns it immediately when it is already a function, and forces
@@ -3364,6 +3384,7 @@ void prime_entry(Process& p, const Image& img, uint32_t func) {
 
 void prime_force(Process& p, Value v) {
     p.conts.clear();
+    p.frames.clear();
     push_cont(p, ContKind::Halt, 0, 0, 0, UNIT);
     enter(p, v);
 }
@@ -3684,6 +3705,14 @@ bool nested_whnf(Process& p, Value v, const Value* args, uint32_t argc, Value* o
     const size_t floor = p.conts.size();
     const Mode saved_mode = p.mode;
     const uint32_t saved_node = p.node;
+    // The code that asked for this force may still be using its frame at the
+    // depth this loop starts from, so the frames under it stay (`FrameStack`).
+    struct FrameFloor {
+        Process& p;
+        size_t was;
+        explicit FrameFloor(Process& q) : p(q), was(q.frames.raise_floor()) {}
+        ~FrameFloor() { p.frames.restore_floor(was); }
+    } frame_floor(p);
 
     // The machine state this loop is about to overwrite. It is two live
     // references, and a collection inside the loop would move both -- so they

@@ -191,14 +191,16 @@ dream::Value dream_rt_global(dream::Process* p, uint32_t index);
 dream::Value dream_rt_snapshot(dream::Process* p, dream::Value closure, uint32_t nslots,
                                const dream::Value* vals, const uint32_t* binds);
 
-/// The interpreter's own frame for this call adopted as the snapshot: the
-/// slots `binds` names get the thunks `dream_rt_snapshot` would have made.
 /// A remembered binding finished after a snapshot suspended it: settle the
 /// snapshot's thunk of it to `value` in place. See "A binding computed once"
 /// in jit.cpp.
 void dream_rt_settle(dream::Process* p, dream::Value frame, uint32_t slot, dream::Value value);
-void dream_rt_adopt(dream::Process* p, dream::Value frame, uint32_t nslots,
-                    const dream::Value* vals, const uint32_t* binds);
+/// The interpreter's own frame for this call adopted as the snapshot: the
+/// slots `binds` names get the thunks `dream_rt_snapshot` would have made.
+/// Answers the snapshot, which is a copy on the heap when the frame is on the
+/// process's stack.
+dream::Value dream_rt_adopt(dream::Process* p, dream::Value frame, uint32_t nslots,
+                            const dream::Value* vals, const uint32_t* binds);
 
 /// `node` suspended against `frame`.
 dream::Value dream_rt_thunk(dream::Process* p, uint32_t node, dream::Value frame);

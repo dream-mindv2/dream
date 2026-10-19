@@ -99,6 +99,10 @@ std::string work_label(Process& p, Value work) {
     }
     if (is_obj(work, ObjType::Thunk)) {
         Value frame = static_cast<ThunkObj*>(as_obj(work))->frame;
+        // A flat suspension holds its frame's closure instead (`ThunkObj`).
+        if (is_obj(frame, ObjType::Closure)) {
+            return image_function_name(p, static_cast<ClosureObj*>(as_obj(frame))->func);
+        }
         if (is_obj(frame, ObjType::Frame)) {
             Value c = static_cast<FrameObj*>(as_obj(frame))->closure;
             if (is_obj(c, ObjType::Closure)) {

@@ -699,13 +699,19 @@ void dream_rt_settle(Process* p, Value frame, uint32_t slot, Value value) {
     obj_type_store_release(o, ObjType::Indirect);
 }
 
-void dream_rt_adopt(Process* p, Value frame, uint32_t nslots, const Value* vals,
-                    const uint32_t* binds) {
+Value dream_rt_adopt(Process* p, Value frame, uint32_t nslots, const Value* vals,
+                     const uint32_t* binds) {
     // The interpreter's frame for this call, taken over as the snapshot. What
     // it lacks is what running the body would have written by now: a thunk in
     // each binding's slot. Only into a slot still empty -- one the body has
     // not written is all there can be before the first back-edge -- and through
     // the barrier, because this is a frame compiled code did not make.
+    //
+    // A frame on the process's stack dies with the call, and the suspensions
+    // made against a snapshot outlive it, so that one is copied to the heap
+    // first and the copy is the snapshot. The stack frame stays as the call
+    // left it, which is what a bail back into the interpreter runs in.
+    if (as_obj(frame)->gc & GC_SHARED) frame = dream::heap_frame(*p, frame);
     auto* fo = static_cast<FrameObj*>(as_obj(frame));
     for (uint32_t i = 0; i < nslots && i < fo->nslots; ++i) {
         if (binds[i] == NO_NODE || fo->slots()[i] != NIL_SLOT) continue;
@@ -714,6 +720,7 @@ void dream_rt_adopt(Process* p, Value frame, uint32_t nslots, const Value* vals,
         p->heap().remember_if_old(fo, th);
         value_slot_store(&fo->slots()[i], th);
     }
+    return frame;
 }
 
 Value dream_rt_thunk(Process* p, uint32_t node, Value frame) {

@@ -633,6 +633,16 @@ Value Heap::make_thunk(uint32_t node, Value frame) {
     return from_obj(o);
 }
 
+Value Heap::make_flat_thunk(uint32_t node, Value closure, uint32_t nvalues) {
+    auto* o = static_cast<ThunkObj*>(
+        alloc_bare(ObjType::Thunk, 8 + sizeof(Value) + size_t(nvalues) * sizeof(Value)));
+    o->node = node;
+    o->pad = 0;
+    o->frame = closure;
+    o->aux = uint16_t(nvalues + 1);
+    return from_obj(o);
+}
+
 Value Heap::make_frame(Value closure, uint32_t nslots) {
     return make_frame_filling(closure, nslots, 0);
 }
@@ -1385,8 +1395,12 @@ inline void for_each_slot(Obj* o, ObjType type, F&& visit) {
         }
         case ObjType::Thunk:
         case ObjType::Blackhole: {
+            // A blackhole keeps its values: unwinding turns it back into the
+            // thunk it was, to be forced again.
             auto* t = static_cast<ThunkObj*>(o);
             visit(&t->frame);
+            const uint32_t k = thunk_value_count(t);
+            for (uint32_t i = 0; i < k; ++i) visit(&t->values()[i]);
             break;
         }
         case ObjType::Indirect: {
@@ -2947,9 +2961,17 @@ struct VerifyWalk {
                     break;
                 }
                 case ObjType::Thunk:
-                case ObjType::Blackhole:
-                    push(static_cast<ThunkObj*>(o)->frame, v);
+                case ObjType::Blackhole: {
+                    auto* t = static_cast<ThunkObj*>(o);
+                    const uint32_t k = thunk_value_count(t);
+                    if (t->bytes < sizeof(ThunkObj) + size_t(k) * sizeof(Value)) {
+                        problem("thunk at " + addr(o) + " is too small for its values");
+                        return;
+                    }
+                    push(t->frame, v);
+                    for (uint32_t i = 0; i < k; ++i) push(t->values()[i], v);
                     break;
+                }
                 case ObjType::Indirect:
                     push(static_cast<IndirectObj*>(o)->target, v);
                     break;
@@ -3448,11 +3470,19 @@ Value copy_suspension(Heap& dest, Value v, CopySeen& seen) {
         case ObjType::Thunk: {
             // Thunks travel with their frame, so a spawned computation carries
             // everything it needs and evaluates independently in its new home.
+            // A flat one carries its closure and values the same way.
             auto* src = static_cast<ThunkObj*>(o);
-            Value th = dest.make_thunk(src->node, UNIT);
+            const uint32_t k = thunk_value_count(src);
+            Value th = thunk_flat(src) ? dest.make_flat_thunk(src->node, UNIT, k)
+                                       : dest.make_thunk(src->node, UNIT);
+            for (uint32_t i = 0; i < k; ++i) static_cast<ThunkObj*>(as_obj(th))->values()[i] = UNIT;
             seen.emplace(v, th);
             Value frame = copy_value(dest, src->frame, seen);
             static_cast<ThunkObj*>(as_obj(th))->frame = frame;
+            for (uint32_t i = 0; i < k; ++i) {
+                Value x = copy_value(dest, static_cast<ThunkObj*>(as_obj(v))->values()[i], seen);
+                static_cast<ThunkObj*>(as_obj(th))->values()[i] = x;
+            }
             return th;
         }
         case ObjType::Blackhole:

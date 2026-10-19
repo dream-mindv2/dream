@@ -2547,6 +2547,9 @@ private:
         rt_cons_after_, rt_set_tail_, rt_type_error_got_, rt_settle_, rt_stack_floor_;
     /// The adopt arm of the `snapshot` being written, joined at its end.
     llvm::BasicBlock* pending_adopt_ = nullptr;
+    /// The frame that arm adopted: the entry frame, or its copy on the heap
+    /// when the entry frame is on the process's stack (`dream_rt_adopt`).
+    llvm::Value* adopted_ = nullptr;
 };
 
 llvm::Function* Emitter::emit(const std::string& name) {
@@ -2655,7 +2658,7 @@ void Emitter::declare_helpers() {
         "dream_rt_yield_frame", llvm::FunctionType::get(i64_, {ptr_, i64_, i32_, ptr_}, false));
     rt_adopt_ = mod_.getOrInsertFunction(
         "dream_rt_adopt",
-        llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr_, i64_, i32_, ptr_, ptr_}, false));
+        llvm::FunctionType::get(i64_, {ptr_, i64_, i32_, ptr_, ptr_}, false));
     rt_apply_ = mod_.getOrInsertFunction(
         "dream_rt_apply", llvm::FunctionType::get(i32_, {ptr_, i64_, i32_, ptr_, ptr_}, false));
 }
@@ -3128,8 +3131,10 @@ llvm::Value* Emitter::snapshot() {
         auto* copy = bb("snap.copy");
         b_.CreateCondBr(b_.CreateLoad(i1_, fresh_), adopt, copy);
         b_.SetInsertPoint(adopt);
-        b_.CreateCall(rt_adopt_, {proc_, frame_, i32c(int(f_.slots)), vals, bind_table_});
-        b_.CreateStore(frame_, snap_);
+        llvm::Value* adopted =
+            b_.CreateCall(rt_adopt_, {proc_, frame_, i32c(int(f_.slots)), vals, bind_table_});
+        b_.CreateStore(adopted, snap_);
+        adopted_ = adopted;
         auto* adopt_end = b_.GetInsertBlock();
         b_.CreateBr(done);
         b_.SetInsertPoint(copy);
@@ -3155,7 +3160,7 @@ llvm::Value* Emitter::snapshot() {
     auto* phi = b_.CreatePHI(i64_, 3);
     phi->addIncoming(cur, have);
     phi->addIncoming(made, make_end);
-    if (pending_adopt_) phi->addIncoming(frame_, pending_adopt_);
+    if (pending_adopt_) phi->addIncoming(adopted_, pending_adopt_);
     pending_adopt_ = nullptr;
     (void)from;
     return phi;

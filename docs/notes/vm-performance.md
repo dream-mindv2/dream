@@ -1921,3 +1921,51 @@ The plan, in the order it can be measured:
 "Frames freed on return" above measured the ceiling of freeing only the
 frames nobody held at about 1%: those were already dying young. What this
 removes is the other half -- the held ones, which are the ones that cost.
+
+## Frames on a stack, built (2026-10-18)
+
+Steps 1 and 2 of the plan above, as `flat_thunk`/`run_suspension` in
+interp.cpp and `FrameStack` in process.hpp. Step 3 was not needed: compiled
+code still makes its snapshots on the heap, and copies the interpreter's
+frame there only when it adopts one (`dream_rt_adopt`) or parks with one in
+an `EnterRetry` -- not on every compiled call, which is what a first version
+did, and which left frames at 19% of allocation.
+
+A self-compile, against the commit before on the same machine, three runs
+each:
+
+| | before | after |
+|---|---|---|
+| allocated | 7.83 GB | 5.79 GB (-26%) |
+| promoted | 1.38 GB | 1.08 GB (-22%) |
+| live at the largest major | 590 MB | 430 MB (-27%) |
+| collections | 1644 major, 13981 minor | 1379, 10208 |
+| wall, all cores | 4.3-4.6 s | 4.3-4.6 s |
+| wall, `-j 1` | 18.2 s | 17.8 s (-2%) |
+
+Memory, not time. A `perf` profile of the single-worker run after it puts
+the collector's scanning and forwarding at about 3% of the samples: the
+interpreter's own dispatch and LLVM's optimizer are where the time is, so
+taking a quarter of the allocation away moved the clock by about the share
+the collector had left. The heap is now mostly flat suspensions (thunks
+51% of what is allocated, at 37 bytes on average against 24), maps and lists.
+
+Three things the build found, all about what may still point at a frame
+once it is dropped:
+
+- **The frame register and a nested force's saved frame** may name a
+  dropped frame whose memory a newer one now uses, mid-object. The
+  collector read that as a header and promoted garbage; it showed as
+  integers where lists were, far from the cause. `Process::visit_roots`
+  now asks `FrameStack::holds` before forwarding either. The way it was
+  found is worth keeping: a run with flat suspensions over *heap* frames
+  was correct, so the copying was sound and the fault was in reuse; a run
+  that poisoned dropped frames and never reused their memory was correct
+  too, so nothing used a dropped frame -- something only *pointed* at one.
+- **The heap verifier** treats a pointer into no heap and no shared area as
+  corruption, and the continuations hand it stack frames. A continuation
+  names only live frames, so its header is safe to read and a stack frame
+  there is skipped; the frame's slots are visited as roots of their own.
+- **A call in tail position** makes its frame where its caller's was, so
+  the saturated-call path builds the arguments' suspensions before the
+  frame rather than writing them into it from the caller's slots.

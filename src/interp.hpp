@@ -32,6 +32,8 @@ void prime_force(Process& p, Value v);
 /// references are returned directly -- allocating a thunk to wrap a value that
 /// is already in normal form would cost an allocation and lose sharing.
 Value thunk_for(Process& p, uint32_t node, Value frame);
+/// A copy on the heap of a frame on the process's stack (see `FrameStack`).
+Value heap_frame(Process& p, Value frame);
 
 /// The value of image global `index`, created on first use in this process.
 Value global_value(Process& p, uint32_t index);

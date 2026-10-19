@@ -225,6 +225,16 @@ struct VmOptionRec {
 };
 static_assert(sizeof(VmOptionRec) == 16, "VM option records are 16 bytes on disk");
 
+/// One local's name, for a debugger (`LOCL`): which function, which slot, and
+/// the name's `KSTR` index. Present only in an image built with
+/// `--debug-info`.
+struct LocalRec {
+    uint32_t func;
+    uint32_t slot;
+    uint32_t name;
+};
+static_assert(sizeof(LocalRec) == 12, "local name records are 12 bytes on disk");
+
 /// `VMOP` keys. See `emit.vm_nursery_max` in dreams/src/emit.dr.
 inline constexpr uint32_t VMOP_NURSERY_MAX = 1;
 inline constexpr uint32_t VMOP_MAX_HEAP = 2;
@@ -382,6 +392,10 @@ public:
     uint32_t func_count() const { return n_funcs_; }
     uint32_t global_count() const { return n_globals_; }
     uint32_t import_count() const { return n_imports_; }
+    /// The names a debug build gave its functions' locals (`LOCL`), in
+    /// function order; none for any other image.
+    uint32_t local_count() const { return n_locals_; }
+    const LocalRec& local(uint32_t i) const { return locals_[i]; }
 
     /// Index of the global with this name, or -1.
     int find_global(const char* name) const;
@@ -427,6 +441,7 @@ private:
     const TypeRec* integer_types_ = nullptr; uint32_t n_integer_types_ = 0;
     const TypeRec* types_ = nullptr;         uint32_t n_types_ = 0;
     const VmOptionRec* vm_options_ = nullptr; uint32_t n_vm_options_ = 0;
+    const LocalRec* locals_ = nullptr;       uint32_t n_locals_ = 0;
 
     /// The payload bytes, and where its `u64` length header sits. The offset
     /// is kept because validation has to prove the payload ends inside the

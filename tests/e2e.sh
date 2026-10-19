@@ -85,10 +85,11 @@ fi
 # The debugger, as a tool would drive it: a trace of a function's calls and
 # what each answers, and a stop that prints the frame, with no terminal to
 # ask. Its output is the debugger's own, on stderr, and the program's stays
-# where it was.
-if "${compile[@]}" "$HERE/programs/bignum.dr" -o "$WORK/debugged.dream" >"$WORK/debugged.compile" 2>&1; then
+# where it was. Built with `--debug-info`, the frame is shown by the names
+# the locals were written with.
+if "${compile[@]}" --debug-info "$HERE/programs/bignum.dr" -o "$WORK/debugged.dream" >"$WORK/debugged.compile" 2>&1; then
   debugged="$("$dream" --debug 'trace fib_loop; on fact_loop locals, continue; continue' "$WORK/debugged.dream" 2>&1 </dev/null)"
-  if [[ "$debugged" != *'-> fib_loop('* || "$debugged" != *'<- fib_loop = '* || "$debugged" != *'-- break: fact_loop'* || "$debugged" != *'  s0 = '* ]]; then
+  if [[ "$debugged" != *'-> fib_loop(n = '* || "$debugged" != *'<- fib_loop = '* || "$debugged" != *'-- break: fact_loop'* || "$debugged" != *'  s0 n = '* ]]; then
     echo "FAIL debugger (trace, stop or frame missing)"
     printf '%s\n' "$debugged" | head -20 | sed 's/^/    /'
     fail=$((fail + 1))

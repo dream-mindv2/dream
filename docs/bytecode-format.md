@@ -99,6 +99,7 @@ Unknown section kinds must be skipped, not treated as an error.
 | `IMPT` | `u32 path, u32 alias`                               | imports; both are `KSTR` indices |
 | `MODS` | 24 bytes (below)                                    | module records: which globals belong to which module |
 | `SPAN` | `u32 start, u32 end`                                 | per-node source spans, parallel to `NODE`; reserved, never written |
+| `LOCL` | `u32 func, u32 slot, u32 name`                       | the name a function's slot was written as, `name` a `KSTR` index; only in a build with `--debug-info`, for `dream --debug` |
 | `ITYP` | `u32 func, u32 reserved, u64 integer_params`        | integer signature hints for the JIT |
 | `TYPE` | `u32 func, u32 reserved, u64 float_params`          | what signatures declared, for the JIT (below) |
 | `VMOP` | `u32 key, u32 reserved, u64 value`                  | VM settings from the root package's `[vm]` table; optional (below) |

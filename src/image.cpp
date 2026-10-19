@@ -480,6 +480,9 @@ bool Image::parse(std::string& error) {
         } else if (s.kind == tag("VMOP")) {
             if (!fits(sizeof(VmOptionRec))) { error = "VMOP section is short"; return false; }
             vm_options_ = reinterpret_cast<const VmOptionRec*>(base); n_vm_options_ = s.count;
+        } else if (s.kind == tag("LOCL")) {
+            if (!fits(sizeof(LocalRec))) { error = "LOCL section is short"; return false; }
+            locals_ = reinterpret_cast<const LocalRec*>(base); n_locals_ = s.count;
         } else if (s.kind == tag("SPAN")) {
             if (!fits(sizeof(SpanRec))) { error = "SPAN section is short"; return false; }
             spans_ = reinterpret_cast<const SpanRec*>(base); n_spans_ = s.count;

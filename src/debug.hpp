@@ -8,10 +8,11 @@
 // those probes kept, behind commands:
 //
 //   break NAME        stop when a function of that name is entered
+//   break FILE:LINE   stop in the function written at or before that line
 //   trace NAME        print each call of it, its arguments and what it answers
 //   watch NATIVE      print each call of a native or builtin and its answer
 //   on NAME CMD; ..   commands to run whenever NAME stops, then go on
-//   step, next, finish, continue, bt [N], locals, print sN|cN [DEPTH],
+//   step, next, finish, continue, bt [N], locals, print NAME|sN|cN [DEPTH],
 //   node, delete NAME, quit
 //
 // Commands come from the script given to `--debug`, separated by `;` or new
@@ -20,6 +21,10 @@
 // printed to stderr, and nothing is forced: a value not yet evaluated is
 // shown as `<lazy>`, with the function it was made in, because a debugger
 // that evaluated what it showed would change what the program does.
+//
+// An image built with `--debug-info` (`debug = true` in a manifest) names
+// each function's locals (`LOCL`), and the frame is shown by those names;
+// any other image, by slot.
 //
 // A debugged run is interpreted. Compiled code keeps its frames in registers
 // and calls nothing back per step, so a breakpoint in it would never fire.

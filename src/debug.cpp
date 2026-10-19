@@ -2,6 +2,7 @@
 
 #include "debug.hpp"
 
+#include <cctype>
 #include <cinttypes>
 #include <cstdio>
 #include <deque>
@@ -50,6 +51,12 @@ struct Debugger {
     /// Each function's body node, by image, to know a call is being entered.
     const Image* bodies_of = nullptr;
     std::unordered_map<uint32_t, uint32_t> body_func;
+    /// What a debug build named each local (`LOCL`), by function and slot.
+    std::unordered_map<uint64_t, std::string> local_name;
+    /// `break FILE:LINE`s, and the functions they came to in this image: the
+    /// one written last at or before the line, in a file whose path ends so.
+    std::vector<std::pair<std::string, uint32_t>> line_breaks;
+    std::set<uint32_t> break_funcs;
 };
 
 Debugger& dbg() {
@@ -233,11 +240,49 @@ std::string shown(Process& p, Value v, int depth = 2) {
     return s;
 }
 
+std::string path_of(const Image& img, uint32_t fi) {
+    const FuncRec& f = img.func(fi);
+    if (f.source == 0 || f.source - 1 >= img.string_count()) return "";
+    StringRef s = img.str(f.source - 1);
+    return std::string(s.data, s.len);
+}
+
+/// The functions `break FILE:LINE` stops in.
+void place_breaks(Debugger& d, const Image& img) {
+    d.break_funcs.clear();
+    for (const auto& [file, line] : d.line_breaks) {
+        uint32_t best = UINT32_MAX, best_line = 0;
+        for (uint32_t fi = 0; fi < img.func_count(); ++fi) {
+            const std::string path = path_of(img, fi);
+            const FuncRec& f = img.func(fi);
+            if (path.size() < file.size() || path.compare(path.size() - file.size(), file.size(), file) != 0) continue;
+            if (f.line <= line && f.line >= best_line) { best = fi; best_line = f.line; }
+        }
+        if (best == UINT32_MAX) std::fprintf(stderr, "  no function at %s:%u\n", file.c_str(), line);
+        else d.break_funcs.insert(best);
+    }
+}
+
 void index_bodies(Debugger& d, const Image& img) {
     if (d.bodies_of == &img) return;
     d.bodies_of = &img;
     d.body_func.clear();
     for (uint32_t fi = 0; fi < img.func_count(); ++fi) d.body_func.emplace(img.func(fi).body, fi);
+    d.local_name.clear();
+    for (uint32_t i = 0; i < img.local_count(); ++i) {
+        const LocalRec& r = img.local(i);
+        if (r.name >= img.string_count()) continue;
+        StringRef s = img.str(r.name);
+        d.local_name[(uint64_t(r.func) << 32) | r.slot] = std::string(s.data, s.len);
+    }
+    place_breaks(d, img);
+}
+
+/// What a debug build named slot `slot` of function `fi`, or "".
+std::string slot_name(Debugger& d, const Image& img, uint32_t fi, uint32_t slot) {
+    index_bodies(d, img);
+    auto it = d.local_name.find((uint64_t(fi) << 32) | slot);
+    return it == d.local_name.end() ? std::string() : it->second;
 }
 
 /// The function a call is entering at this step, or UINT32_MAX.
@@ -247,7 +292,7 @@ uint32_t entering(Debugger& d, Process& p) {
     return it == d.body_func.end() ? UINT32_MAX : it->second;
 }
 
-std::string args_of(Process& p, uint32_t fi) {
+std::string args_of(Debugger& d, Process& p, uint32_t fi) {
     const Image& img = *p.code;
     std::string s;
     if (!is_obj(p.frame, ObjType::Frame) || fi >= img.func_count()) return s;
@@ -255,6 +300,8 @@ std::string args_of(Process& p, uint32_t fi) {
     const uint32_t arity = img.func(fi).arity;
     for (uint32_t i = 0; i < arity && i < f->nslots; ++i) {
         s += i ? ", " : "";
+        const std::string name = slot_name(d, img, fi, i);
+        if (!name.empty()) s += name + " = ";
         s += f->slots()[i] == NIL_SLOT ? "<unbound>" : shown(p, f->slots()[i], 1);
     }
     return s;
@@ -299,15 +346,18 @@ void backtrace(Process& p, size_t limit) {
     }
 }
 
-void locals(Process& p, int depth) {
+void locals(Debugger& d, Process& p, int depth) {
     if (!is_obj(p.frame, ObjType::Frame)) {
         std::fprintf(stderr, "  no frame\n");
         return;
     }
     auto* f = static_cast<FrameObj*>(as_obj(p.frame));
+    const uint32_t fi = func_of(p.frame);
     for (uint32_t i = 0; i < f->nslots; ++i) {
         if (f->slots()[i] == NIL_SLOT) continue;
-        std::fprintf(stderr, "  s%u = %s\n", i, shown(p, f->slots()[i], depth).c_str());
+        const std::string name = slot_name(d, *p.code, fi, i);
+        std::fprintf(stderr, "  s%u%s = %s\n", i, name.empty() ? "" : (" " + name).c_str(),
+                     shown(p, f->slots()[i], depth).c_str());
     }
     if (is_obj(f->closure, ObjType::Closure)) {
         auto* c = static_cast<ClosureObj*>(as_obj(f->closure));
@@ -316,15 +366,28 @@ void locals(Process& p, int depth) {
     }
 }
 
-void print_slot(Process& p, const std::string& which, int depth) {
-    if (which.size() < 2 || !is_obj(p.frame, ObjType::Frame)) {
-        std::fprintf(stderr, "  print sN or cN\n");
+void print_slot(Debugger& d, Process& p, const std::string& asked, int depth) {
+    if (asked.empty() || !is_obj(p.frame, ObjType::Frame)) {
+        std::fprintf(stderr, "  print NAME, sN or cN\n");
         return;
     }
     auto* f = static_cast<FrameObj*>(as_obj(p.frame));
+    // A name a debug build gave a slot of this function, else `sN`/`cN`.
+    std::string which = asked;
+    const uint32_t fi = func_of(p.frame);
+    for (uint32_t i = 0; i < f->nslots; ++i) {
+        if (slot_name(d, *p.code, fi, i) == asked) {
+            which = "s" + std::to_string(i);
+            break;
+        }
+    }
+    if (which.size() < 2) {
+        std::fprintf(stderr, "  no %s here\n", asked.c_str());
+        return;
+    }
     const uint32_t i = uint32_t(std::strtoul(which.c_str() + 1, nullptr, 10));
     if (which[0] == 's' && i < f->nslots) {
-        std::fprintf(stderr, "  %s = %s\n", which.c_str(),
+        std::fprintf(stderr, "  %s = %s\n", asked.c_str(),
                      f->slots()[i] == NIL_SLOT ? "<unbound>" : shown(p, f->slots()[i], depth).c_str());
     } else if (which[0] == 'c' && is_obj(f->closure, ObjType::Closure) &&
                i < static_cast<ClosureObj*>(as_obj(f->closure))->ncaps) {
@@ -398,14 +461,24 @@ bool command(Debugger& d, Process& p, const std::string& line) {
     }
     if (c == "q" || c == "quit") std::exit(0);
     if (c == "bt" || c == "backtrace") { backtrace(p, arg.empty() ? 12 : size_t(std::atoi(arg.c_str()))); return false; }
-    if (c == "locals" || c == "frame") { locals(p, arg.empty() ? 1 : std::atoi(arg.c_str())); return false; }
-    if (c == "p" || c == "print") { print_slot(p, arg, depth); return false; }
+    if (c == "locals" || c == "frame") { locals(d, p, arg.empty() ? 1 : std::atoi(arg.c_str())); return false; }
+    if (c == "p" || c == "print") { print_slot(d, p, arg, depth); return false; }
     if (c == "node") {
         const Node& n = p.code->node(p.node);
         std::fprintf(stderr, "  node %u: %s a=%u b=%u c=%u\n", p.node, op_name(Op(n.op)), n.a, n.b, n.c);
         return false;
     }
-    if (c == "b" || c == "break") { d.breaks.insert(arg); return false; }
+    if (c == "b" || c == "break") {
+        // `FILE:LINE`, or a function's name.
+        const size_t colon = arg.rfind(':');
+        if (colon != std::string::npos && colon + 1 < arg.size() && std::isdigit(uint8_t(arg[colon + 1]))) {
+            d.line_breaks.push_back({arg.substr(0, colon), uint32_t(std::stoul(arg.substr(colon + 1)))});
+            place_breaks(d, *p.code);
+        } else {
+            d.breaks.insert(arg);
+        }
+        return false;
+    }
     if (c == "trace") { d.traces.insert(arg); return false; }
     if (c == "watch") { d.watches.insert(arg); return false; }
     if (c == "delete") { d.breaks.erase(arg); d.traces.erase(arg); d.watches.erase(arg); d.on_stop.erase(arg); return false; }
@@ -471,13 +544,13 @@ void debug_eval(Process& p) {
     const uint32_t fi = entering(d, p);
     const std::string name = fi == UINT32_MAX ? std::string() : name_of(*p.code, fi);
     if (fi != UINT32_MAX && d.traces.count(name)) {
-        std::fprintf(stderr, "-> %s(%s)\n", name.c_str(), args_of(p, fi).c_str());
+        std::fprintf(stderr, "-> %s(%s)\n", name.c_str(), args_of(d, p, fi).c_str());
         d.open.push_back({p.id(), p.conts.size(), fi});
     }
     const char* why = nullptr;
     if (d.going == Going::Step) why = "step";
     else if (d.going == Going::Next && p.id() == d.at_pid && p.conts.size() <= d.at_depth) why = "next";
-    else if (fi != UINT32_MAX && d.breaks.count(name)) why = "break";
+    else if (fi != UINT32_MAX && (d.breaks.count(name) || d.break_funcs.count(fi))) why = "break";
     if (why) session(d, p, why);
 }
 

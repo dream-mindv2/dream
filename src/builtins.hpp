@@ -63,6 +63,13 @@ void append_shortest(double d, bool f32, std::string* out);
 Value map_insert(Process& p, Value map, Value key, Value value);
 /// `std.trunk`'s natives, added to `std.vm`'s members (trunk.cpp).
 void add_trunk_natives(std::vector<NativeDef>& members);
+NativeResult core_trunk_of(Process& p, Value self, Value* args, uint32_t n);
+NativeResult core_trunk_to_list(Process& p, Value self, Value* args, uint32_t n);
+NativeResult core_trunk_lookup(Process& p, Value self, Value* args, uint32_t n);
+NativeResult core_trunk_at(Process& p, Value self, Value* args, uint32_t n);
+NativeResult core_trunk_push(Process& p, Value self, Value* args, uint32_t n);
+NativeResult core_trunk_set(Process& p, Value self, Value* args, uint32_t n);
+NativeResult core_trunk_recall(Process& p, Value self, Value* args, uint32_t n);
 /// What `--stats` says trunks did, if any were made.
 void print_trunk_stats();
 /// `map` with `n` keys set, in order, a later one winning: what a run of
@@ -73,6 +80,12 @@ Value map_insert_many(Process& p, Value map, uint32_t n, const Value* pairs);
 Value map_erase(Process& p, Value map, Value key);
 /// Every entry of a map, in the trie's order.
 void map_collect(Value node, std::vector<std::pair<Value, Value>>& out);
+/// `compare`'s order, which the wire formats write a map's entries in.
+bool compare_for_wire(Process& p, Value a, Value b, int* out);
+/// The packed wire form (pack.cpp): `vm.wire_pack`, and reading it back.
+NativeResult vm_wire_pack(Process& p, Value self, Value* args, uint32_t n);
+bool is_packed(const unsigned char* data, uint64_t len);
+bool wire_unpack(Process& p, const unsigned char* data, uint64_t len, Value* out);
 /// Look up a key. Returns false when it is absent.
 bool map_lookup(Process& p, Value map, Value key, Value* out);
 

@@ -723,6 +723,11 @@ NativeResult searched(Process& p, Value* args, Ask ask, const char* who) {
     p.stack.push_back(UNIT);
     int64_t got = 0;
     if (!search(p, base, ask, &got)) return failed(p, base);
+    if (ask == Ask::Lookup) {
+        p.trunk_memo_c = p.stack[base];
+        p.trunk_memo_k = p.stack[base + 1];
+        p.trunk_memo_i = got;
+    }
     if (ask == Ask::Contains) return answer(p, base, make_bool(got >= 0));
     return answer(p, base, make_fixnum(got));
 }
@@ -771,6 +776,36 @@ NativeResult trunk_put(Process& p, Value, Value* args, uint32_t) {
 }
 
 }  // namespace
+
+// The same operations as builtins, for what the supercompiler writes: a loop
+// it carries in a trunk where the program kept a list (`upserted` in
+// dreams/src/accum.dr) may belong to a program that never imports `std.trunk`,
+// and a builtin is reached by its index rather than through a module.
+NativeResult core_trunk_of(Process& p, Value self, Value* args, uint32_t n) { return trunk_from_list(p, self, args, n); }
+NativeResult core_trunk_to_list(Process& p, Value self, Value* args, uint32_t n) { return trunk_to_list(p, self, args, n); }
+NativeResult core_trunk_lookup(Process& p, Value self, Value* args, uint32_t n) { return trunk_lookup(p, self, args, n); }
+NativeResult core_trunk_at(Process& p, Value self, Value* args, uint32_t n) { return trunk_at(p, self, args, n); }
+NativeResult core_trunk_push(Process& p, Value self, Value* args, uint32_t n) { return trunk_push(p, self, args, n); }
+NativeResult core_trunk_set(Process& p, Value self, Value* args, uint32_t n) { return trunk_set(p, self, args, n); }
+
+/// `_trunk_recall k c`: the position the last lookup found when it was of
+/// `k` in this very version `c` (`Process::trunk_memo_c`), -1 for an empty
+/// trunk, or `()` when it cannot say. Forces nothing: `k` arrives as it is,
+/// and is the same key when it is the same object, or a string or number
+/// equal to it -- what the lookup was asked holds exactly then.
+NativeResult core_trunk_recall(Process& p, Value, Value* args, uint32_t) {
+    const Value c = resolve(args[1]);
+    if (!is_trunk(c)) return not_a_trunk(p, "_trunk_recall");
+    if (length(trunk_of(c)) == 0) return NativeResult::ok(make_fixnum(-1));
+    if (resolve(p.trunk_memo_c) != c) return NativeResult::ok(UNIT);
+    const Value k = resolve(args[0]), m = resolve(p.trunk_memo_k);
+    bool same = k == m;
+    if (!same && is_obj(k, ObjType::Str) && is_obj(m, ObjType::Str)) {
+        auto *a = static_cast<StrObj*>(as_obj(k)), *b = static_cast<StrObj*>(as_obj(m));
+        same = a->len == b->len && std::memcmp(a->data(), b->data(), a->len) == 0;
+    }
+    return NativeResult::ok(same ? make_fixnum(p.trunk_memo_i) : UNIT);
+}
 
 void add_trunk_natives(std::vector<NativeDef>& members) {
     members.push_back({"trunk_of", 1, 0b0, trunk_from_list, 0, true});

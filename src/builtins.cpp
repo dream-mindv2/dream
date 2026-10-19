@@ -1860,6 +1860,7 @@ ModuleDef make_vm_module() {
                          // `std.wire`'s format, done here; see "The wire format, natively".
                          {"wire_encode", 1, 0b0, vm_wire_encode, 0, true},
                          {"wire_decode", 1, 0b1, vm_wire_decode},
+                         {"wire_pack", 1, 0b0, vm_wire_pack, 0, true},
                          // `opt.optimize_parts`'s walk; see "Sharing a program's parts".
                          {"share_arenas", 1, 0b0, vm_share_arenas, 0, true},
                          // `emit`'s node and kid sections; see "The image's two largest sections".
@@ -5445,13 +5446,20 @@ NativeResult vm_index_section(Process& p, Value, Value* args, uint32_t) {
 NativeResult vm_wire_decode(Process& p, Value, Value* args, uint32_t) {
     Bytes b;
     if (!string_bytes(args[0], &b)) return type_fail(p, "wire_decode needs a string");
-    WireReader r{p, reinterpret_cast<const unsigned char*>(b.data), b.len};
+    const auto* bytes = reinterpret_cast<const unsigned char*>(b.data);
+    WireReader r{p, bytes, b.len};
     // Read only when `read` succeeded, which -O1 cannot see: a TSan build
     // warned that it may be used uninitialized.
     Value v = UNIT;
     const char* why = nullptr;
-    if (!r.read(&v, 0)) why = "not a wire value";
-    else if (r.at != r.len) why = "trailing bytes after a wire value";
+    // The packed form (pack.cpp) says so in its first byte.
+    if (is_packed(bytes, b.len)) {
+        if (!wire_unpack(p, bytes, b.len, &v)) why = "not a packed wire value";
+    } else if (!r.read(&v, 0)) {
+        why = "not a wire value";
+    } else if (r.at != r.len) {
+        why = "trailing bytes after a wire value";
+    }
     Value second = why ? p.heap().make_string(why, uint32_t(std::strlen(why))) : v;
     return NativeResult::ok(make_result(p.heap(), p.runtime(), why == nullptr, second));
 }
@@ -5597,6 +5605,13 @@ const BuiltinDef BUILTINS[] = {
     {"_heap_empty", 1, 0b1, core_heap_empty},
     {"_heap_min", 1, 0b1, core_heap_min},
     {"_heap_pop", 1, 0b1, core_heap_pop},
+    {"_trunk_of", 1, 0b0, core_trunk_of, true},
+    {"_trunk_to_list", 1, 0b1, core_trunk_to_list},
+    {"_trunk_lookup", 2, 0b10, core_trunk_lookup, true},
+    {"_trunk_at", 2, 0b11, core_trunk_at},
+    {"_trunk_push", 2, 0b10, core_trunk_push},
+    {"_trunk_set", 3, 0b101, core_trunk_set},
+    {"_trunk_recall", 2, 0b10, core_trunk_recall},
 };
 
 uint32_t builtin_count() { return uint32_t(sizeof(BUILTINS) / sizeof(BUILTINS[0])); }
@@ -5608,5 +5623,7 @@ Value make_result(Heap& h, Runtime& rt, bool ok, Value value) {
     static_cast<RecordObj*>(as_obj(r))->items()[0] = value;
     return r;
 }
+
+bool compare_for_wire(Process& p, Value a, Value b, int* out) { return compare_values(p, a, b, 0, out); }
 
 }  // namespace dream

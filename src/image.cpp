@@ -69,7 +69,7 @@ void node_children(const Node& n, const uint32_t* kids, std::vector<uint32_t>& o
         for (uint64_t i = 0; i < count; ++i) out.push_back(kids[off + i]);
     };
     switch (static_cast<Op>(n.op)) {
-        case Op::Field: case Op::Force: case Op::Neg: case Op::Not: case Op::BitNot: case Op::TypeIs: case Op::ListTail: case Op::ListIsEmpty:
+        case Op::Field: case Op::Force: case Op::Neg: case Op::Not: case Op::BitNot: case Op::TypeIs: case Op::ListTail: case Op::ListIsEmpty: case Op::ListIsCons: case Op::ListHead:
             out.push_back(n.a);
             break;
         DREAM_PRIMITIVE_CASES
@@ -181,6 +181,8 @@ const char* op_name(Op op) {
         case Op::Cons: return "cons";
         case Op::ListTail: return "list_tail";
         case Op::ListIsEmpty: return "list_is_empty";
+        case Op::ListIsCons: return "list_is_cons";
+        case Op::ListHead: return "list_head";
         case Op::Add: return "add";
         case Op::Sub: return "sub";
         case Op::Mul: return "mul";
@@ -740,9 +742,14 @@ bool Image::validate(std::string& error) {
             case Op::Ensure:
                 if (!node_ok(n.a) || !node_ok(n.b)) return fail("bad ensure body or cleanup");
                 break;
-            case Op::Force: case Op::Neg: case Op::Not: case Op::BitNot: case Op::TypeIs: case Op::ListTail: case Op::ListIsEmpty:
+            case Op::Force: case Op::Neg: case Op::Not: case Op::BitNot: case Op::TypeIs: case Op::ListTail: case Op::ListIsEmpty: case Op::ListIsCons: case Op::ListHead:
                 if (!node_ok(n.a)) return fail("bad unary operand");
-                if (Op(n.op) == Op::TypeIs && (n.b > DREAM_TYPE_MAP || n.c > 1))
+                // The surface types a test may ask about: the data ones, and the
+                // three of them appended later, each of which the JIT tells
+                // apart by its header.
+                if (Op(n.op) == Op::TypeIs &&
+                    ((n.b > DREAM_TYPE_MAP && n.b != DREAM_TYPE_TENSOR && n.b != DREAM_TYPE_RECORD &&
+                      n.b != DREAM_TYPE_TRUNK) || n.c > 1))
                     return fail("bad type test");
                 break;
             case Op::Add: case Op::Sub: case Op::Mul: case Op::Div: case Op::Mod:

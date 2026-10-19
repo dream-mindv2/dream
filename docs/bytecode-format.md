@@ -205,6 +205,8 @@ lazy VM cannot work out for itself:
 | 81 | `record_make` | kids offset | field count | atom index, top bit set for a variant |
 | 82 | `set_many` | container node | kids offset | pair count |
 | 83 | `ensure` | body node | cleanup node | |
+| 84 | `list_is_cons` | value node | — | — |
+| 85 | `list_head` | value node | — | — |
 
 `record_make` builds a value of a declared `group`, `struct` or union variant
 (`RecordObj`): the fields in a lazy position, as `array`'s items are, and the

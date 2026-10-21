@@ -19,6 +19,9 @@ namespace {
 /// either. `DREAM_GC_THREADS` is how the next workload gets to disagree, and 1
 /// turns the helpers off altogether.
 unsigned configured_capacity() {
+#ifdef DREAM_BROWSER
+    return 1;
+#endif
     if (const char* env = std::getenv("DREAM_GC_THREADS")) {
         long long n = std::atoll(env);
         if (n > 0) return unsigned(std::min<long long>(n, 64));

@@ -441,6 +441,9 @@ bool read_shape(Process& p, Value v, Shape* s, Value* err) {
 // `DREAM_TENSOR_THREADS` caps them; 1 turns this off.
 
 unsigned tensor_threads() {
+#ifdef DREAM_BROWSER
+    return 1;
+#else
     static const unsigned n = [] {
         unsigned hw = std::thread::hardware_concurrency();
         if (hw == 0) hw = 1;
@@ -451,6 +454,7 @@ unsigned tensor_threads() {
         return std::min<unsigned>(hw, 16);
     }();
     return n;
+#endif
 }
 
 /// A computed matrix as a product reads it: `cols` wide, stored row by row.

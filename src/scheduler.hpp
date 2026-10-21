@@ -49,6 +49,13 @@ public:
     Scheduler& operator=(const Scheduler&) = delete;
 
     void start();
+    /// Drive the same scheduler from an embedding's event loop. No OS workers
+    /// are started. Each call runs at most max_slices and returns to the host.
+    /// Call only on the owning thread, before start(), and never mix modes.
+    bool pump(unsigned max_slices = 1);
+    /// Delay until the next timer, in milliseconds; -1 if none is armed.
+    /// Intended for a cooperative host deciding when to call pump again.
+    int64_t next_timer_delay_ms();
     /// Ask the workers to stop and join them.
     void stop();
 
@@ -215,6 +222,7 @@ private:
     std::vector<std::unique_ptr<Worker>> workers_;
     std::atomic<unsigned> next_worker_{0};
     std::atomic<bool> running_{false};
+    bool cooperative_ = false;
 
     /// Processes that exist and have not finished.
     std::atomic<size_t> live_{0};

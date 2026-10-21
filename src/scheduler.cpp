@@ -162,6 +162,7 @@ unsigned Scheduler::default_workers() {
 }
 
 void Scheduler::start() {
+    if (cooperative_) return;
     if (running_.exchange(true)) return;
     // A collection may borrow threads, but only as many as there are workers
     // with nothing to run: the cores a process is using are not the
@@ -175,6 +176,47 @@ void Scheduler::start() {
         timers_running_ = true;
     }
     timer_thread_ = std::thread([this] { timer_loop(); });
+}
+
+bool Scheduler::pump(unsigned max_slices) {
+    if (!cooperative_) {
+        if (running_.load()) return false;
+        cooperative_ = true;
+        running_.store(true);
+    }
+    // Expire timers on the embedding thread; wake before dropping the wait.
+    for (;;) {
+        TimerEntry e;
+        {
+            std::lock_guard<std::mutex> g(timer_mutex_);
+            const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            if (timers_.empty() || timers_.begin()->first > now) break;
+            auto first = timers_.begin();
+            e = first->second;
+            timer_index_.erase(e.seq);
+            timers_.erase(first);
+        }
+        wake(e.pid);
+        note_io_wait(false);
+    }
+    for (unsigned n = 0; n < max_slices; ++n) {
+        auto p = take_local(0);
+        if (!p) break;
+        run_slice(p, 0);
+        runnable_.fetch_sub(1, std::memory_order_relaxed);
+        active_.fetch_sub(1, std::memory_order_seq_cst);
+    }
+    return live() != 0;
+}
+
+int64_t Scheduler::next_timer_delay_ms() {
+    std::lock_guard<std::mutex> g(timer_mutex_);
+    if (timers_.empty()) return -1;
+    const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    const auto remaining = timers_.begin()->first - now;
+    return remaining <= 0 ? 0 : (remaining - 1) / 1000000 + 1;
 }
 
 void Scheduler::stop() {

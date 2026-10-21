@@ -19,7 +19,9 @@
 namespace dream {
 static_assert(std::endian::native == std::endian::little,
               "The mapped Dream image reader requires a little-endian host");
+#ifndef __EMSCRIPTEN__
 static_assert(sizeof(void*) == 8, "The Dream VM requires a 64-bit host");
+#endif
 static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559,
               "Dream images store IEEE 754 binary64 floats");
 

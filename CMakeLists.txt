@@ -201,14 +201,15 @@ if(DREAM_ENABLE_JIT)
                       OUTPUT_VARIABLE DREAM_LLVM_LIBDIR
                       OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 
-      # `--link-static` fails outright when the archives are not installed
-      # (Debian's llvm-dev ships them, some distributions do not), which is
-      # what falling back on the shared library is decided by.
+      # Ask for full paths: CMake can omit an LLVM -L directory when it was
+      # implicit for the compiler it detected, even if that directory is no
+      # longer in the current linker's search path (for example on Nix).
+      # `--link-static` fails outright when the archives are not installed.
       set(DREAM_LLVM_STATIC OFF)
       if(NOT DREAM_LINK_DEPS STREQUAL "SHARED")
         execute_process(
           COMMAND ${DREAM_LLVM_CONFIG}
-                  --link-static --libs ${DREAM_LLVM_COMPONENTS}
+                  --link-static --libfiles ${DREAM_LLVM_COMPONENTS}
           RESULT_VARIABLE DREAM_LLVM_STATIC_RC
           OUTPUT_VARIABLE DREAM_LLVM_LIBS_RAW
           OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -270,7 +271,7 @@ if(DREAM_ENABLE_JIT)
 
       if(NOT DREAM_LLVM_STATIC)
         execute_process(
-          COMMAND ${DREAM_LLVM_CONFIG} --link-shared --libs ${DREAM_LLVM_COMPONENTS}
+          COMMAND ${DREAM_LLVM_CONFIG} --link-shared --libfiles ${DREAM_LLVM_COMPONENTS}
           RESULT_VARIABLE DREAM_LLVM_SHARED_RC
           OUTPUT_VARIABLE DREAM_LLVM_LIBS_RAW
           OUTPUT_STRIP_TRAILING_WHITESPACE

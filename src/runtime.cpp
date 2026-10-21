@@ -59,6 +59,7 @@ Runtime::Runtime(bool owns_host_services)
     register_module(make_math_module());
     register_module(make_tensor_module());
     register_module(make_vm_module());
+#ifndef DREAM_BROWSER
     register_module(make_ffi_module());
     register_module(make_io_module());
     register_module(make_net_module());
@@ -68,6 +69,7 @@ Runtime::Runtime(bool owns_host_services)
     // The poller thread has to exist before any process can wait on a
     // descriptor, and it costs nothing when nothing does IO.
     io_init();
+#endif
 }
 
 void Runtime::enable_profile(size_t top) {

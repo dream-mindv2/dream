@@ -923,8 +923,13 @@ NativeResult core_error_payload(Process& p, Value, Value* args, uint32_t) {
 // Only the decision is strict. The predicate decides how much of the value
 // must be inspected; the runtime must not force anything else (even on failure).
 // This is a partial pure operation, like indexing or arithmetic on wrong types.
+// The value is handed back to be entered, not as an answer: it is a lazy
+// argument, so a suspension when it was written as anything but a name, and a
+// suspension returned as a value reached whatever used it unforced --
+// `type_assert ok "why" (k + "!")` printed as `<value>`, and joined into a
+// string, raised.
 NativeResult bi_type_assert(Process& p, Value, Value* args, uint32_t) {
-    if (resolve(args[0]) == TRUE_V) return NativeResult::ok(args[2]);
+    if (resolve(args[0]) == TRUE_V) return NativeResult::enter(args[2]);
     return NativeResult::raise(p.heap().make_error(
         make_atom(well_known(p.runtime()).type_error), args[1]));
 }

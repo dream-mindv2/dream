@@ -1,0 +1,18 @@
+// `type_assert ok why value` answers `value`, which is a lazy argument: a
+// suspension whenever it is written as anything but a name. The native used to
+// hand that suspension back as its answer, so it reached whatever used it
+// unforced -- printed as `<value>`, and refused by a join as "not a string".
+// It is entered now, as `_match_head` enters what it finds.
+import std.console;
+import std.list;
+import std.os;
+import std.str;
+
+let named k = type_assert (k != "") "a name" (k + "!");
+
+let main! = {
+    let k = to_string (len (os.args! ()));
+    console.print! ("computed -> " + to_string [named k, type_assert true ("why " + k) (k + "?")])
+    console.print! ("joined -> " + str.concat_all (list.flat_map (fn h -> [named h, ";"]) ["a", "b"]))
+    console.print! ("refused -> " + to_string (try! { strict! (named ""); :passed } catch e { :refused }))
+};

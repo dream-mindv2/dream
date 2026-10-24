@@ -158,6 +158,16 @@ public:
 
     /// Register a module the program can `import`. Must happen before running.
     void register_module(ModuleDef module);
+
+    /// A runtime that runs code nobody chose to run: the macros of a program
+    /// being compiled, which `dreams --check` -- and so the language server,
+    /// on whatever folder an editor opens -- expands. A macro is pure by the
+    /// checker's reading, but a `foreign` function or an `image` binding is
+    /// pure on the program's say-so, and `system` declared without a `!` ran
+    /// a command at check time. Confined, the runtime provides no `std.ffi`
+    /// and calls no other image; what the VM itself implements is unchanged.
+    void confine() { confined_ = true; }
+    bool confined() const { return confined_; }
     const ModuleDef* find_module(const std::string& name) const;
 
     /// The host module an import record names, remembered after the first ask.
@@ -405,6 +415,7 @@ private:
     class Jit* jit_ = nullptr;
     std::unique_ptr<struct WellKnownAtoms> wk_;
     bool owns_host_services_;
+    bool confined_ = false;
 };
 
 /// Well-known atoms, interned at startup so the runtime can name them cheaply.

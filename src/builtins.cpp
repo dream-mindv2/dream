@@ -2117,7 +2117,10 @@ NativeResult run_compile_time(Process& p, Runtime& rt, Scheduler& sched,
     }
     Value deep;
     if (!force_deep(*root, root->exit_value, &deep)) {
-        return comp_fail(p, "comp_failed", "the compile-time expression raised");
+        // Forcing the answer raised, and `force_deep` leaves what in `result`:
+        // said, as the raise above is, or the author is told only that it did.
+        return comp_fail(p, "comp_failed",
+                         "the compile-time expression raised " + describe_failure(*root, root->result));
     }
     Value imported;
     if (!import_across(p, rt, deep, &imported, 0)) {
@@ -2128,6 +2131,7 @@ NativeResult run_compile_time(Process& p, Runtime& rt, Scheduler& sched,
 }
 
 NativeResult vm_eval_image(Process& p, Value, Value* args, uint32_t) {
+    if (p.runtime().confined()) return comp_fail(p, "confined", "a macro cannot run another image");
     Value v = resolve(args[0]);
     if (!is_obj(v, ObjType::Str)) return type_fail(p, "eval_image! needs an image as a string");
     auto* s = static_cast<StrObj*>(as_obj(v));
@@ -2162,11 +2166,15 @@ NativeResult vm_open_image(Process& p, Value, Value* args, uint32_t) {
     if (!is_obj(v, ObjType::Str)) return type_fail(p, "open_image! needs an image as a string");
     auto* s = static_cast<StrObj*>(as_obj(v));
 
+    if (p.runtime().confined()) return comp_fail(p, "confined", "a macro cannot open another image");
     auto session = std::make_unique<ImageSession>();
     // Copied before it is loaded, and kept for as long as the session is:
     // the image is read where it lies, so these bytes *are* the program.
     session->bytes.assign(s->data(), s->len);
     session->runtime = std::make_unique<Runtime>(/*owns_host_services=*/false);
+    // A session is how a compiler runs a program's macros, which it does to
+    // check code it has not been asked to run -- see `Runtime::confine`.
+    session->runtime->confine();
     std::string message;
     if (!session->runtime->load_image_bytes(
             reinterpret_cast<const uint8_t*>(session->bytes.data()), session->bytes.size(),
@@ -2554,6 +2562,7 @@ NativeResult image_invoke(Process& p, Value self, Value* args, uint32_t) {
 /// decides only the name the function carries, which is the runtime's
 /// reading of its purity, as it is for `ffi.function`.
 NativeResult vm_image_function(Process& p, Value callee, Value* args, uint32_t) {
+    if (p.runtime().confined()) return image_fail(p, "a macro cannot call another image");
     const bool pure = static_cast<NativeObj*>(as_obj(callee))->user == 1;
     Value desc;
     if (!force_deep(p, args[0], &desc)) return NativeResult::raise(p.result);

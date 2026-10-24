@@ -1458,9 +1458,12 @@ bool member_value_slow(Process& p, uint32_t imp, uint32_t name_index,
     StringRef member = img.str(name_index);
     const ModuleDef* def = p.runtime().module_for_import(imp);
     if (!def) {
+        const std::string path = img.str(img.import(imp).path).str();
         *out = raise_error(p, well_known(p.runtime()).no_such_member,
-                           "module `" + img.str(img.import(imp).path).str() +
-                               "` is not provided by this runtime");
+                           p.runtime().confined() && path == "std.ffi"
+                               ? "a macro cannot call a foreign library: expanding one is checking code, "
+                                 "not running it (see Runtime::confine)"
+                               : "module `" + path + "` is not provided by this runtime");
         return false;
     }
     uint32_t at = UINT32_MAX;

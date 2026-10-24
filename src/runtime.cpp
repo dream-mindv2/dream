@@ -475,6 +475,10 @@ const ModuleDef* Runtime::module_for_import(uint32_t import_index) {
             break;
         }
     }
+    // A confined runtime has no foreign libraries to offer (see `confine`):
+    // the import resolves to nothing, and its first call says the module is
+    // not provided, as for any module this runtime lacks.
+    if (found && confined_ && found->name == "std.ffi") found = nullptr;
     if (found && import_index < import_defs_.size()) {
         import_defs_[import_index].store(found, std::memory_order_relaxed);
     }
@@ -482,6 +486,7 @@ const ModuleDef* Runtime::module_for_import(uint32_t import_index) {
 }
 
 const ModuleDef* Runtime::find_module(const std::string& name) const {
+    if (confined_ && name == "std.ffi") return nullptr;
     for (const auto& m : modules_) {
         if (m.name == name) return &m;
     }

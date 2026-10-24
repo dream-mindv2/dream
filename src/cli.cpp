@@ -15,6 +15,7 @@
 #include "builtins.hpp"
 #include "debug.hpp"
 #include "image.hpp"
+#include "graphics.hpp"
 #include <thread>
 #include "interp.hpp"
 #include "jit.hpp"
@@ -50,6 +51,7 @@ const char* USAGE =
     "\n"
     "options:\n"
     "      --version        print which VM this is and exit\n"
+    "      --graphics DIR   run a graphics application directory (optional build)\n"
     "  -x, --exec <name>    run <name>.dream from the installation, not from here\n"
     "  -e, --entry <name>   run this global instead of `main!`\n"
     "  -j, --workers <n>    scheduler threads (default: one per usable core)\n"
@@ -429,6 +431,13 @@ int dream_main(int argc, char** argv) {
         } else if (a == "--version") {
             std::printf("dream %s (%s)\n", DREAM_VERSION, DREAM_COMMIT);
             return 0;
+        } else if (a == "--graphics") {
+            const std::string application = next("--graphics");
+            if (i + 1 != argc) {
+                std::fputs("dream: --graphics takes one application directory\n", stderr);
+                return 2;
+            }
+            return run_graphics(application);
         } else if (a == "-x" || a == "--exec") {
             bool ok = true;
             path = installed_only(next("--exec"), MINDV2_PATH, &ok);

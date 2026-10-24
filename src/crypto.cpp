@@ -32,6 +32,7 @@
 #include "crypto.hpp"
 
 #include <cerrno>
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -43,6 +44,8 @@
 #include <bcrypt.h>
 #elif defined(__APPLE__)
 #include <cstdlib>
+#elif defined(__EMSCRIPTEN__)
+#include <unistd.h>
 #else
 #include <sys/random.h>
 #endif
@@ -446,6 +449,14 @@ bool secure_random_bytes(unsigned char* buf, size_t n, std::string* error) {
     }
 #elif defined(__APPLE__)
     arc4random_buf(buf, n);
+#elif defined(__EMSCRIPTEN__)
+    // `crypto.getRandomValues` underneath, which takes at most 256 bytes a call.
+    for (size_t got = 0; got < n; got += 256) {
+        if (getentropy(buf + got, std::min<size_t>(256, n - got)) != 0) {
+            *error = std::string("getentropy: ") + std::strerror(errno);
+            return false;
+        }
+    }
 #else
     for (size_t got = 0; got < n;) {
         ssize_t r = getrandom(buf + got, n - got, 0);

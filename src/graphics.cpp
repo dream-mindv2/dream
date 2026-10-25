@@ -516,8 +516,23 @@ struct Host {
 };
 }
 
+namespace {
+/// WebKitGTK hands the compositor its frames as DMA-BUFs, and on NVIDIA's
+/// driver under Wayland the compositor refuses them: GDK reports "Error 71
+/// (Protocol error) dispatching to Wayland display" and the window is gone
+/// before it is drawn. Shared memory is what WebKit falls back to when told,
+/// and it is told only there, and only when the person has not said
+/// otherwise. Before GTK starts, so the web process WebKit spawns inherits it.
+void prepare_display() {
+    if (std::getenv("WAYLAND_DISPLAY") && !std::getenv("WEBKIT_DISABLE_DMABUF_RENDERER") &&
+        std::filesystem::exists("/proc/driver/nvidia/version"))
+        setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 0);
+}
+}
+
 int run_graphics(const std::string& application) {
     if (std::getenv("DREAM_GRAPHICS_TRACE")) std::fputs("graphics: initializing display\n", stderr);
+    prepare_display();
     if ((!std::getenv("DISPLAY") && !std::getenv("WAYLAND_DISPLAY")) || !gtk_init_check(nullptr, nullptr)) {
         std::fputs("dream: graphics_unavailable: no display\n", stderr);
         return 1;
@@ -545,6 +560,7 @@ int run_graphics(const std::string& application) {
 }
 
 int run_graphics_image(const Image& image, const std::string& path, const std::vector<std::string>& args) {
+    prepare_display();
     if ((!std::getenv("DISPLAY") && !std::getenv("WAYLAND_DISPLAY")) || !gtk_init_check(nullptr, nullptr)) {
         std::fputs("dream: graphics_unavailable: no display (run it with `--headless` for its backend alone)\n", stderr);
         return 1;

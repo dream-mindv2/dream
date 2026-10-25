@@ -118,6 +118,14 @@ assets, served by it with the host's headers one at a time. MiniBrowser
 WebKit itself works there. `ptrace` attach is not permitted on this machine;
 running the host under `gdb -batch -ex run` and interrupting it is.
 
+A sixth only shows on a real desktop, which is why every test above missed
+it: on NVIDIA's driver under Wayland, WebKit's DMA-BUF renderer hands the
+compositor buffers it refuses, and GDK prints `Error 71 (Protocol error)
+dispatching to Wayland display` and exits before the window draws. Xvfb is
+X11 and never takes that path. `prepare_display` in graphics.cpp sets
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` there (Wayland, `/proc/driver/nvidia`
+present, the variable not already set), which falls back to shared memory.
+
 ## Order
 
 The worker collapses the renders of one slice to the last, to send the page

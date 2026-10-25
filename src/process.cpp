@@ -218,7 +218,7 @@ Process::Process(Runtime& rt, uint64_t id) : rt_(rt), id_(id), heap_(64 * 1024) 
 
 Process::~Process() { release_foreign(*this); }
 
-uintptr_t Process::compiled_stack_floor() const {
+uintptr_t machine_stack_low() {
     // Thread-local, not process-local: a green process can resume on another
     // scheduler worker, whose stack may have a different address and size.
     static thread_local const uintptr_t low = []() -> uintptr_t {
@@ -244,6 +244,11 @@ uintptr_t Process::compiled_stack_floor() const {
         return 0;
 #endif
     }();
+    return low;
+}
+
+uintptr_t Process::compiled_stack_floor() const {
+    const uintptr_t low = machine_stack_low();
     // Leave space for the next generated frame, the interpreter and GC. The
     // old slot-count estimate missed temporary arrays and spilled registers:
     // a newly admitted wide dispatcher could use 140 KB for a single call.

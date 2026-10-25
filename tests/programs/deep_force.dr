@@ -1,0 +1,26 @@
+// Forces nested deeper than any machine stack holds.
+//
+// `lazy.settled` forces a value all the way down, and here each value is a
+// suspension that settles the next: every level is a machine loop nested in
+// the one before, on the OS thread's stack. Deep enough, that ran off the
+// stack's end and the VM died of a segfault -- on Android, whose threads get
+// 1 MB, the compiler compiling itself did. It is an error now, raised where a
+// program can catch it, as a recursion too deep for the heap's limits is.
+
+import std.console;
+import std.error;
+import std.lazy;
+
+// Each level settles the one under it before it is a list at all.
+let rec nest n = if n == 0 { [] } else {
+    let inner = nest (n - 1);
+    if lazy.settled inner { [inner] } else { [] }
+};
+
+let rec depth xs !d = match xs { [inner] => depth inner (d + 1), _ => d };
+
+let main! = {
+    console.print! (depth (nest 1000) 0)
+    let deep = try! { to_string (depth (nest 10000000) 0) } catch e { to_string (error.kind e) };
+    console.print! deep
+};

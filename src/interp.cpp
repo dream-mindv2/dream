@@ -3723,6 +3723,16 @@ Value literal_string_value(Process& p, uint32_t index) { return literal_string(p
 /// the collector can see them.
 bool nested_whnf(Process& p, Value v, const Value* args, uint32_t argc, Value* out,
                  Value* taken) {
+    // Each nested force is a machine loop on this thread's stack, and a deep
+    // enough chain of them -- a value forced deeply, one of whose suspensions
+    // forces deeply in turn -- runs off its end. That was a segfault; it is
+    // the error a recursion too deep for the heap's limits is.
+    if (!machine_stack_has_room(DREAM_FRAME_ADDRESS())) {
+        p.result = raise_error(p, well_known(p.runtime()).stack_overflow,
+                               "forces nested too deep for the machine stack");
+        *out = p.result;
+        return false;
+    }
     ForceNest nest(p);
     LoopStack loop(p, DREAM_FRAME_ADDRESS());
     // Run a nested machine loop down to the current continuation depth.

@@ -391,6 +391,21 @@ class Process;
 /// process's destructor as a backstop; a second call finds nothing to do.
 void release_foreign(Process& p);
 
+/// The lowest address of this OS thread's machine stack, or 0 where that
+/// cannot be asked. What compiled calls and nested forces measure their room
+/// against.
+uintptr_t machine_stack_low();
+
+/// Room left on this thread's machine stack, past `here`, before a nested
+/// machine loop would run into its end: what a force needs to be sure of
+/// before it starts one rather than crash in the middle (see
+/// "stack_thread.hpp" for why the size differs by platform).
+inline bool machine_stack_has_room(const void* here) {
+    constexpr uintptr_t reserve = 256 * 1024;
+    const uintptr_t low = machine_stack_low();
+    return low == 0 || reinterpret_cast<uintptr_t>(here) >= low + reserve;
+}
+
 class Process final : public RootSource {
 public:
     Process(Runtime& rt, uint64_t id);

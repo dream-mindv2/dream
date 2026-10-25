@@ -22,6 +22,24 @@ file descriptors. Linux and Android use epoll; macOS and Windows use a readiness
 The portable poller checks readiness every 5 ms and is a correctness baseline,
 not a claim of identical throughput or latency to epoll.
 
+Machine stacks are the VM's, not the platform's. Every Dream process runs on a
+scheduler worker started with a 16 MB stack (`kWorkerStack` in
+`dream/src/stack_thread.hpp`), where a plain thread would get `ulimit -s` from
+glibc and 1 MB from Android's Bionic and from Windows -- on which the compiler,
+compiling itself, needed about 2 MB and segfaulted. The stack is reserved, not
+committed, so the size costs a shallow program nothing. A force nested deeper
+than the stack holds raises `:stack_overflow`, as a recursion past the heap's
+limits does.
+
+`-DDREAM_SELF_CONTAINED=ON` (Linux, macOS) links everything but the C library
+into the VM -- libffi, OpenSSL, the C++ runtime and, with a JIT, LLVM and its
+zlib and zstd -- so one binary runs on any distribution with a glibc as new as
+the one it was built against. It needs those as archives (PIC libffi, an
+OpenSSL built without zlib, `libstdc++-static`; zlib and zstd only for LLVM's
+sake, with the JIT). It is how the published toolchains are
+built (dream-mindv2/toolchain, `ci/linux.sh`); without LLVM it is
+interpreter-only, like any build.
+
 Platform-specific work remains platform-specific:
 
 - FFI library names, exported symbols, and C ABIs require matching libraries
@@ -78,8 +96,9 @@ To build and install directly on a phone, use the
 [Termux installer](../android/README.md). It installs the VM, compiler,
 and standard library using Termux's own dependencies.
 
-Android is an interpreter target for **arm64-v8a and x86_64, API 34+**
-(Android 14). It uses the NDK, libffi, OpenSSL 3, and the existing epoll IO
+Android is an interpreter target for **arm64-v8a (aarch64) and x86_64, API 34+**
+(Android 14); the build takes either name for 64-bit ARM, the NDK's ABI or the
+processor's. It uses the NDK, libffi, OpenSSL 3, and the existing epoll IO
 backend. API 34 is required by `posix_spawn_file_actions_addchdir_np`, used
 by `os.exec_in!` and `os.exec_with!`. JIT builds and 32-bit ABIs are rejected
 at configure time. Android libraries and executables use 16 KB ELF alignment.

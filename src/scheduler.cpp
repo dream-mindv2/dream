@@ -169,7 +169,7 @@ void Scheduler::start() {
     // collector's to take. See gc_pool.hpp.
     GcPool::instance().set_idle_hint(&idle_workers_);
     for (unsigned i = 0; i < workers_.size(); ++i) {
-        workers_[i]->thread = std::thread([this, i] { worker_loop(i); });
+        workers_[i]->thread.start(kWorkerStack, [this, i] { worker_loop(i); });
     }
     {
         std::lock_guard<std::mutex> g(timer_mutex_);

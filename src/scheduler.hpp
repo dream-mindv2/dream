@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "process.hpp"
+#include "stack_thread.hpp"
 #include "runtime.hpp"
 
 namespace dream {
@@ -192,7 +193,8 @@ private:
     struct Worker {
         std::mutex mutex;
         std::deque<std::shared_ptr<Process>> queue;
-        std::thread thread;
+        /// Runs Dream, so its stack is the VM's to size (`kWorkerStack`).
+        StackThread thread;
     };
 
     void worker_loop(unsigned index);

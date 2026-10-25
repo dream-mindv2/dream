@@ -1336,11 +1336,15 @@ include(GNUInstallDirs)
 # Bionic has honoured DT_RUNPATH (never DT_RPATH, hence the new dtags) and
 # $ORIGIN since API 24 and we require 34, so the flag is put back; libdream
 # gets $ORIGIN of its own for the libc++_shared.so shipped beside it.
+# An executable's flag is a variable of its own, copied from the library's at
+# project() -- while it was still empty -- so both are set.
 if(ANDROID)
-  set(CMAKE_SHARED_LIBRARY_RUNTIME_C_FLAG "-Wl,--enable-new-dtags,-rpath,")
-  set(CMAKE_SHARED_LIBRARY_RUNTIME_CXX_FLAG "-Wl,--enable-new-dtags,-rpath,")
-  set(CMAKE_SHARED_LIBRARY_RUNTIME_C_FLAG_SEP ":")
-  set(CMAKE_SHARED_LIBRARY_RUNTIME_CXX_FLAG_SEP ":")
+  foreach(kind SHARED_LIBRARY EXECUTABLE)
+    foreach(lang C CXX)
+      set(CMAKE_${kind}_RUNTIME_${lang}_FLAG "-Wl,--enable-new-dtags,-rpath,")
+      set(CMAKE_${kind}_RUNTIME_${lang}_FLAG_SEP ":")
+    endforeach()
+  endforeach()
   set_target_properties(dream PROPERTIES INSTALL_RPATH "$ORIGIN")
 endif()
 if(APPLE)

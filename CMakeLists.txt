@@ -969,6 +969,7 @@ else()
     # which the toolchain's is not (OpenSSL's default, `no-zlib`), and which
     # would make every self-contained build need a zlib it never uses. What
     # libcrypto does need of the system is threads and dlopen.
+    target_include_directories(dream SYSTEM PRIVATE "${OPENSSL_INCLUDE_DIR}")
     target_link_libraries(
       dream
       PRIVATE

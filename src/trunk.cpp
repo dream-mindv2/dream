@@ -691,6 +691,22 @@ NativeResult trunk_slice(Process& p, Value, Value* args, uint32_t) {
         p.stack[base] = copy_out(p, base, c->start + uint32_t(from), c->start + uint32_t(to), 0);
         return answer(p, base, p.stack[base]);
     }
+    // Moving the root only narrows what it reads: the store still holds every
+    // slot it ever had, the slices of earlier versions among them, and
+    // `grow_to` carries all of them on. So a queue -- pushed at the back,
+    // taken from the front -- would keep everything it was ever given. Once
+    // the slots outside the slice outnumber those in it, the slice gets a
+    // store of its own instead, and the old one goes with the old versions.
+    // That copies what is kept only after as many slots have been let go,
+    // which keeps a queue's push and `rest` constant time, amortized.
+    const TrunkStoreObj* st = store_of(c);
+    const uint32_t kept = uint32_t(to - from);
+    const uint32_t outside = (st->hi - st->lo) - kept;
+    if (outside > std::max<uint32_t>(kept, 32)) {
+        p.stack[base] = copy_out(p, base, c->start + uint32_t(from), c->start + uint32_t(to),
+                                 std::max<uint32_t>(kept / 2, 4));
+        return answer(p, base, p.stack[base]);
+    }
     return answer(p, base, advance(p, base, c->start + uint32_t(from), c->start + uint32_t(to), false, 0, 0));
 }
 
@@ -706,6 +722,26 @@ NativeResult trunk_concat(Process& p, Value, Value* args, uint32_t) {
     if (n == 0) return answer(p, base, p.stack[base]);
     writable_at(p, base);
     const uint32_t from = trunk_of(p.stack[base + 1])->start;
+    // Past the root's end, where no version has ever written, there is no old
+    // value for the root to keep: the store grows once and every element goes
+    // in behind one new version. A version per element is what the general
+    // way below makes, and a line of terminal output written that way was
+    // a hundred of them.
+    if (TrunkObj* c = trunk_of(p.stack[base]); c->end >= store_of(c)->hi) {
+        const uint32_t start = c->start, end = c->end;
+        grow_to(p, base, end + n - 1);
+        Value store = trunk_of(p.stack[base])->link;
+        for (uint32_t i = 0; i < n; ++i) {
+            // Allocation is not a safepoint, so the store stays where it is.
+            p.stack[base + 2] = read(p.stack[base + 1], from + i);
+            note_write(p, store, Which::Elements, end + i, UNIT, p.stack[base + 2]);
+            note_write(p, store, Which::Keys, end + i, UNIT, p.stack[base + 2]);
+            auto* st = static_cast<TrunkStoreObj*>(as_obj(store));
+            put_field(p, st, &st->slots()[end + i - st->base], p.stack[base + 2]);
+            st->hi = end + i + 1;
+        }
+        return answer(p, base, advance(p, base, start, end + n, false, 0, 0));
+    }
     for (uint32_t i = 0; i < n; ++i) {
         p.stack[base + 2] = read(p.stack[base + 1], from + i);
         TrunkObj* c = trunk_of(p.stack[base]);

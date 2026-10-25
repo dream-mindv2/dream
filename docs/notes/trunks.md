@@ -93,6 +93,33 @@ set kept an entry per write, so each minor trunk scanned the store once
 per write since the last. `Heap::remember_once` keeps one entry per store per
 trunk.
 
+## A queue kept everything it was given
+
+Found by sleep, whose scrollback is a trunk pushed at the back and dropped
+from the front: `seq 1 200000` ended in `out_of_memory` with the history
+capped at 5,000 lines -- the live set grew with the output (116 MB at 50,000
+lines, 605 MB at 200,000), 333,000 row stores alive for 5,500 rows kept.
+
+A `rest`, `drop` or `take` of the root moves the root and narrows what it
+reads, and nothing more: the store's written range, `[lo, hi)`, stays as it
+was, since an older version may still read the slots outside the new bounds.
+`grow_to` carries that whole range into the bigger store. So a queue's store
+held every slot ever pushed, the collector marked every one, and a push past
+the end copied them all again. A slice of the root now takes a store of its
+own (`copy_out`) once the slots outside it outnumber those in it; the old
+version keeps the old store and reads as it did, and the store dies with it.
+The copy is the slice's length and comes only after as many slots were let
+go, so a queue's push and `rest` stay constant time, amortized. The same
+emulator then holds 87 MB at 200,000 lines, flat in the length of the run,
+and runs it in 3.8 s instead of 6.6.
+
+The same workload showed the other cost: `concat` advanced the root once per
+element, and every advance is a version object, because a version records
+the one slot it overwrote. Past the root's end, where no version has written
+(`end >= hi`), there is nothing to record, so the store grows once and the
+elements go in behind one version. Writing a line of terminal output had
+been a hundred versions; allocation for the run fell from 8.2 GB to 5.5 GB.
+
 ## What is not done
 
 - The JIT compiles a function calling a search or `put`, but calls them

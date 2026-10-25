@@ -1,0 +1,101 @@
+// Bindings in branches that share a slot, in functions the JIT compiles.
+//
+// The branches of an `if` and the arms of a `match` give their slots to each
+// other, since only one of them runs (dreams/src/scope.dr): `let a` in one
+// branch and `let b` in the other are both slot 3. So which binding a read of
+// slot 3 means depends on the path, and a read is one node wherever it is
+// written. The JIT refused every such function -- "a slot bound twice" --
+// until it learned to follow the bindings in scope as it walks. What is below
+// is each place that could go wrong once it does: a value read eagerly and
+// lazily, a suspension made before the branch and read inside it, a guard
+// that fails after its arm has bound the slot, a float carried through a
+// branch's binding, a binding that raises on the path not taken, and a `let`
+// of a self call read as the answer.
+//
+// Run under both tiers, which must agree; `.jit` names the functions that must
+// compile.
+
+import std.console;
+import std.list;
+
+// --- each branch binds its own -----------------------------------------------
+let rec branches i n !acc =
+    if i > n { acc } else {
+        let step = if i % 2 == 0 {
+            let a = i * 3;
+            a + a
+        } else {
+            let b = i - 1;
+            let c = b * b;
+            c + b
+        };
+        branches (i + 1) n (acc + step)
+    };
+
+// --- a binding read lazily in one branch, its neighbour's eagerly ------------
+//
+// The list holds the binding unevaluated, so it is a suspension against the
+// iteration's frame, read after the loop has moved on.
+let rec suspended i n acc =
+    if i > n { list.reverse acc } else {
+        let kept = if i % 3 == 0 {
+            let x = i * 10;
+            [x, x + 1]
+        } else {
+            let y = i * 100;
+            [y]
+        };
+        suspended (i + 1) n (list.cons kept acc)
+    };
+
+// --- a suspension made before the branch, then a binding inside it -----------
+let rec before i n acc =
+    if i > n { list.reverse acc } else {
+        let early = [i, i + 1];
+        let late = if i % 2 == 0 { let p = i * 7; [p, list.head early] } else { let q = i * 11; [q, q] };
+        before (i + 1) n (list.cons late acc)
+    };
+
+// --- arms whose patterns bind the same slot, and a guard that says no ---------
+//
+// `[k, v]` with `v > 10` binds `k` and `v`, fails its guard, and falls to the
+// next arm, which binds its own names in the same slots.
+let rec arms xs acc = match xs {
+    [] => acc,
+    [[k, v], ..rest] if v > 10 => arms rest (acc + k * 1000 + v),
+    [[k, v], ..rest] => arms rest (acc + v * 7 - k),
+    [k, ..rest] => arms rest (acc + 1),
+};
+
+// --- a float in one branch's binding ------------------------------------------
+let rec floats x n !acc =
+    if n == 0 { acc } else {
+        floats (if n % 2 == 0 { let h = x * 0.5; h + 1.0 } else { let t = x * 0.25; t + 2.0 }) (n - 1) (acc + x)
+    };
+
+// --- a binding that raises, on the path not taken ------------------------------
+let rec untaken i n !acc =
+    if i > n { acc } else {
+        let v = if i >= 0 { let fine = i * 2; fine } else { let zero = i - i; let boom = i / zero; boom };
+        untaken (i + 1) n (acc + v)
+    };
+
+// --- a `let` of a self call read as the answer, in one branch -------------------
+let rec answer i !acc =
+    if i == 0 { acc } else if i % 2 == 0 {
+        let r = answer (i - 1) (acc + i);
+        r
+    } else {
+        let s = i * 2;
+        answer (i - 1) (acc + s)
+    };
+
+let main! = {
+    console.print! (branches 0 1000 0)
+    console.print! (list.take 6 (suspended 0 30 []))
+    console.print! (list.take 4 (before 0 20 []))
+    console.print! (arms [[1, 20], [2, 3], 9, [4, 5], [5, 50]] 0)
+    console.print! (floats 3.0 40 0.0)
+    console.print! (untaken 0 1000 0)
+    console.print! (answer 1000 0)
+};

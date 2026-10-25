@@ -699,6 +699,17 @@ void dream_rt_settle(Process* p, Value frame, uint32_t slot, Value value) {
     obj_type_store_release(o, ObjType::Indirect);
 }
 
+void dream_rt_rebind(Process* p, Value frame, uint32_t slot, uint32_t node) {
+    // The slot held whatever binding was in scope when the snapshot was made,
+    // or one an arm made before its guard said no. Neither is read again --
+    // the slot's binding is this one from here on, and what the failed arm
+    // made did not outlive its guard -- so the suspension simply replaces it.
+    Value th = p->heap().make_thunk(node, frame);
+    auto* fo = static_cast<FrameObj*>(as_obj(frame));
+    fo->slots()[slot] = th;
+    p->heap().remember_if_old(fo, th);
+}
+
 Value dream_rt_adopt(Process* p, Value frame, uint32_t nslots, const Value* vals,
                      const uint32_t* binds) {
     // The interpreter's frame for this call, taken over as the snapshot. What

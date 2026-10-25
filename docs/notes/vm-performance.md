@@ -1969,3 +1969,53 @@ once it is dropped:
 - **A call in tail position** makes its frame where its caller's was, so
   the saturated-call path builds the arguments' suspensions before the
   frame rather than writing them into it from the caller's slots.
+
+## Bindings in scope: a slot bound in two branches (2026-10-24)
+
+On 2026-10-18 the branches of an `if` and the arms of a `match` began
+giving their slots to each other, since only one runs ("The compiler as the
+program" in dreams/docs/notes/supercompilation.md): frames shrank, a
+self-compile allocated 13% less, and the tier took more functions, being
+smaller. Nothing told the JIT. Its analysis kept one binding a slot,
+function-wide, and refused a second -- "a slot bound twice" -- so every
+function with a `let` in two branches was interpreted from then on. Run
+with every hot function compiled before it ran again (`DREAM_JIT_SYNC=1
+DREAM_JIT_WHY=1`), a self-compile was refused 230 functions, 179 of them for
+that. sleep's terminal emulator found it: its hottest loops were interpreted,
+and were split into one function per branch to get past it.
+
+A read cannot say which binding it means, since nodes are shared and one
+`Local 3` stands for every read of slot 3 -- the supercompiler met the same
+wall and renamed the bindings when it read the arena. The JIT, which has to
+hand its suspensions to the interpreter against a real frame, follows scope
+instead: every walk, analysis and emitter alike, enters a block's `let`s as
+it enters the block and leaves them as it leaves (`BindScope`), so
+`binds_[slot]` is the binding in scope wherever the walk stands. On one
+path a slot is bound once, but for an arm whose guard fails: the arms below
+are written inside it and bind its slots again, which only shadows, as the
+failed arm made nothing that outlives its guard. What follows from that:
+
+- **A fact about a binding is its statement's**, not its slot's: read
+  counts, whether it is written again at a lazy read, whether it is
+  remembered. Each is decided in every scope the statement was met in --
+  one statement can be met in two, the same `let` hash-consed in two
+  branches -- conservatively: inlined only if cheap in all, remembered if it
+  calls in any. The scope is recorded with the binding, and so with each
+  self call, whose arguments' types the float fixpoint asks after the walk.
+- **A snapshot holds the binding in scope where it was made.** Each site
+  has a bind table of its own, and a `let` of a shared slot met after the
+  iteration's snapshot was made writes its suspension in
+  (`dream_rt_rebind`) and clears the slot's memo -- which is also what
+  keeps a failed arm's value from answering for the next arm's.
+- **What has been followed is remembered with its scope.** `mark_refs`
+  skipped a node it had seen, and a node seen again under another binding
+  reads other slots; the scope's signature is part of the key now.
+- **A let step is its read and its binding**, for the same reason.
+
+`dream/tests/programs/jit_shared_slots` is each of those as a loop the tier
+must compile and agree with the interpreter on. A self-compile with every
+hot function compiled reproduces the seed byte for byte, with 56 refusals,
+none of them this; functions compiled, 1,122 to 1,216. A self-compile,
+five interleaved runs each, against the commit before: 4.73 s to 4.43 s
+(-6%), the image identical. The benchmark kernels did not move; they had
+no `let` in a branch.

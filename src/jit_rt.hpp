@@ -195,6 +195,9 @@ dream::Value dream_rt_snapshot(dream::Process* p, dream::Value closure, uint32_t
 /// snapshot's thunk of it to `value` in place. See "A binding computed once"
 /// in jit.cpp.
 void dream_rt_settle(dream::Process* p, dream::Value frame, uint32_t slot, dream::Value value);
+/// A suspension of `node` against `frame`, put in its `slot`: a `let` of a
+/// slot that is bound in more than one place, met after the frame was made.
+void dream_rt_rebind(dream::Process* p, dream::Value frame, uint32_t slot, uint32_t node);
 /// The interpreter's own frame for this call adopted as the snapshot: the
 /// slots `binds` names get the thunks `dream_rt_snapshot` would have made.
 /// Answers the snapshot, which is a copy on the heap when the frame is on the

@@ -709,22 +709,27 @@ struct Analysis {
     /// slot. Such an argument is moved rather than evaluated, which is what
     /// lets it be neither forced nor proved strict. See `Analyzer::carried`.
     SlotSet carried = 0;
-    /// For each slot, the node a `let` bound it to, or `NO_NODE`. A bound slot
-    /// is never read: the expression is written where the name is. See
+    /// For each slot, the statement of the one `let` that binds it, or
+    /// `NO_NODE` -- for a slot no `let` binds, and for one bound in more than
+    /// one place (`multi`), whose binding is whichever is in scope where it is
+    /// read (`BindScope`). `bound` is every slot some `let` binds. A bound
+    /// slot is never read: the expression is written where the name is. See
     /// `Analyzer::check_bind`.
-    std::vector<uint32_t> binds;
+    std::vector<uint32_t> unique_stmts;
+    std::vector<uint8_t> bound;
+    std::vector<uint8_t> multi;
     /// Parameters whose self-call arguments are evaluated before the call, one
     /// bit per slot. Every other argument is in a lazy position. See "Which
     /// arguments are evaluated" in `Analyzer::run`.
     SlotSet eager = 0;
-    /// Per slot, whether a `let`'s value is cheap enough to be written again at
+    /// The `let` statements whose value is cheap enough to be written again at
     /// a lazy read of its name (`cheap_lazy`, and small). Otherwise such a read
     /// suspends the binding's expression, which is what the interpreter's slot
     /// would have held.
-    std::vector<uint8_t> bind_inline;
-    /// Per slot, whether a `let`'s value is remembered once computed rather
+    std::unordered_set<uint32_t> inline_stmts;
+    /// The `let` statements whose value is remembered once computed rather
     /// than written out again at every read. See "A binding computed once".
-    std::vector<uint8_t> bind_memo;
+    std::unordered_set<uint32_t> memo_stmts;
     /// The body calls something that runs the machine underneath it -- a
     /// closure, or a function this tier did not take -- and so may spend the
     /// slice from inside the call. See `dream_rt_apply`.
@@ -738,7 +743,10 @@ struct Analysis {
     /// See "Recursion that is a loop".
     bool accumulate = false;
     std::unordered_set<uint32_t> steps;
-    std::unordered_set<uint32_t> let_steps;
+    /// A let step is a read and the binding it reads (`let_step_key`): one
+    /// node of a name is shared by every place it is written, and in another
+    /// place it may name another binding.
+    std::unordered_set<uint64_t> let_steps;
     /// Answers of the shape `cons h (f ..)`, a cell whose tail is a call of
     /// this function: the list is built ahead of whoever reads it, a run of
     /// cells a call. See "Building ahead".
@@ -796,6 +804,91 @@ bool denied_by_env(const Image& img, uint32_t func_index) {
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// Bindings in scope
+//
+// A slot may be bound by more than one `let`. The branches of an `if` and the
+// arms of a `match` give their slots to each other, since only one of them
+// runs in a call (dreams/src/scope.dr) -- which took a self-compile's frames
+// down by 13% and let the tier take twice the functions, being smaller. So
+// which binding a read means depends on the path to it, and the read cannot
+// say: nodes are shared, and one node of `Local 3` stands for every read of
+// slot 3 in the function. This used to be refused outright, "one slot, one
+// binding", which after the slots were shared refused nearly every function
+// with a `let` in a branch.
+//
+// So every walk follows the bindings in scope as it goes. Entering a block
+// enters its `let`s, leaving it leaves them (`BindScope`), and a read means
+// whatever `binds_[slot]` holds where the walk stands. On one path a slot is
+// bound once, but for one case: an arm whose guard says no falls through to
+// the arms below it, which are written inside it and bind its slots again --
+// and since the failed arm made nothing that outlives its guard (scope.dr
+// again), the inner binding simply shadows the outer. A fact about a binding
+// is kept by its statement, not its slot; and one asked after the walk is
+// asked in the scope the binding was made in, which is recorded with it.
+//
+// What the emitter adds is the frame: a suspension made against this
+// iteration's snapshot reads its slots out of it, so a slot bound in more than
+// one place holds, in each snapshot, the binding in scope where the snapshot
+// was made (one bind table a site), and a `let` of such a slot met after the
+// snapshot was made writes its own suspension in (`dream_rt_rebind`).
+
+/// The bindings a walk has entered, left again when it is destroyed.
+class BindScope {
+public:
+    BindScope(std::vector<uint32_t>& binds, std::vector<uint32_t>& stmts, uint64_t* sig)
+        : binds_(binds), stmts_(stmts), sig_(sig) {}
+    BindScope(const BindScope&) = delete;
+    BindScope& operator=(const BindScope&) = delete;
+    ~BindScope() {
+        for (auto it = saved_.rbegin(); it != saved_.rend(); ++it) set(it->slot, it->value, it->stmt);
+    }
+    /// The `let` statement at `stmt`, entered.
+    void enter(const Image& img, uint32_t stmt) {
+        const Node& b = img.node(stmt);
+        if (b.a >= binds_.size()) return;
+        saved_.push_back({b.a, binds_[b.a], stmts_[b.a]});
+        set(b.a, b.b, stmt);
+    }
+    /// Every `let` of a block, for a walk that does not visit them in order.
+    void enter_block(const Image& img, const Node& block) {
+        for (uint32_t i = 0; i < block.b; ++i) {
+            const uint32_t stmt = img.kid(block.a + i);
+            if (Op(img.node(stmt).op) == Op::Bind) enter(img, stmt);
+        }
+    }
+    /// What `sig` is kept as: a value that differs whenever a slot's binding
+    /// does, so that "this node, in this scope" can be remembered.
+    static uint64_t mix(uint32_t slot, uint32_t stmt) {
+        uint64_t x = (uint64_t(slot) << 32 | stmt) * 0x9E3779B97F4A7C15ull;
+        return x ^ (x >> 29);
+    }
+
+private:
+    void set(uint32_t slot, uint32_t value, uint32_t stmt) {
+        if (sig_) *sig_ ^= mix(slot, stmts_[slot]) ^ mix(slot, stmt);
+        binds_[slot] = value;
+        stmts_[slot] = stmt;
+    }
+    struct Saved {
+        uint32_t slot, value, stmt;
+    };
+    std::vector<uint32_t>& binds_;
+    std::vector<uint32_t>& stmts_;
+    uint64_t* sig_;
+    std::vector<Saved> saved_;
+};
+
+/// A node, or a binding, with the scope it is met in (`BindScope::mix`).
+struct PairHash {
+    size_t operator()(const std::pair<uint32_t, uint64_t>& p) const {
+        return size_t(p.second ^ (uint64_t(p.first) * 0x9E3779B97F4A7C15ull));
+    }
+};
+
+/// A let step's key: the read, and the binding it reads there.
+inline uint64_t let_step_key(uint32_t read, uint32_t stmt) { return uint64_t(read) << 32 | stmt; }
+
 class Analyzer {
 public:
     Analyzer(Runtime& rt, const Image& img, uint32_t func_index, PeerSet* peers = nullptr,
@@ -812,9 +905,8 @@ public:
         if (f_.arity == 0) return a;
         if (denied_by_env(img_, fi_)) return a;
         binds_.assign(f_.slots, NO_NODE);
+        bind_stmts_.assign(f_.slots, NO_NODE);
         reads_.assign(f_.slots, 0);
-        bind_state_.assign(f_.slots, 0);
-        strict_binds_.assign(f_.slots, 0);
         const SlotSet params = SlotSet::low_bits(f_.arity);
         // Checked as though every self-call argument were evaluated, which asks
         // the most of the body: whatever the fixpoint below decides, everything
@@ -879,6 +971,7 @@ public:
         SlotSet strict = 0;
         for (int round = 0; round <= int(f_.arity) + 1; ++round) {
             call_sites_.clear();
+            site_scopes_.clear();
             steps_.clear();
             let_steps_.clear();
             recurses_ = false;
@@ -891,27 +984,35 @@ public:
             eager_ = next;
         }
 
-        bind_inline_.assign(f_.slots, 0);
-        for (uint32_t slot = f_.arity; slot < f_.slots; ++slot) {
-            if (binds_[slot] == NO_NODE) continue;
-            if (strict_binds_[slot] || !cheap_lazy(img_, binds_, f_.arity, binds_[slot], 0)) continue;
-            bool calls = false;
-            if (expand_cost(binds_[slot], 0, &calls) <= kMaxBindDuplication && !calls) {
-                bind_inline_[slot] = 1;
+        // Each binding, in each scope it was met in: written again at a lazy
+        // read only when that is cheap in all of them, and remembered once
+        // computed when it calls anything in any.
+        a.unique_stmts.assign(f_.slots, NO_NODE);
+        a.bound.assign(f_.slots, 0);
+        a.multi.assign(f_.slots, 0);
+        for (uint32_t stmt : bind_order_) {
+            const Node& b = img_.node(stmt);
+            const bool strict = (b.flags & F_STRICT) != 0;
+            bool cheap = !strict, calls = false;
+            for (const Scope& sc : bind_scopes_[stmt]) {
+                in_scope(sc, [&] {
+                    bool c = false;
+                    const uint32_t cost = expand_cost(b.b, 0, &c);
+                    calls = calls || c;
+                    if (cheap && (c || cost > kMaxBindDuplication || !cheap_lazy(img_, binds_, f_.arity, b.b, 0))) {
+                        cheap = false;
+                    }
+                });
             }
+            if (cheap) a.inline_stmts.insert(stmt);
+            if (calls || strict) a.memo_stmts.insert(stmt);
+            if (a.bound[b.a] && a.unique_stmts[b.a] != stmt) a.multi[b.a] = 1;
+            a.bound[b.a] = 1;
+            a.unique_stmts[b.a] = stmt;
         }
-
-        std::vector<uint8_t> memo(f_.slots, 0);
-        for (uint32_t slot = f_.arity; slot < f_.slots; ++slot) {
-            if (binds_[slot] == NO_NODE) continue;
-            bool calls = false;
-            expand_cost(binds_[slot], 0, &calls);
-            memo[slot] = calls || strict_binds_[slot] ? 1 : 0;
+        for (uint32_t slot = 0; slot < f_.slots; ++slot) {
+            if (a.multi[slot]) a.unique_stmts[slot] = NO_NODE;
         }
-
-        a.binds = binds_;
-        a.bind_inline = bind_inline_;
-        a.bind_memo = memo;
         a.carried = carried_;
         a.eager = eager_;
         a.nested_calls = nested_calls_;
@@ -1039,8 +1140,9 @@ private:
         if (op == Op::Local) {
             if (n.a >= f_.slots) return false;
             ++reads_[n.a];
-            // A read of a slot that is neither a parameter nor already bound.
+            // A read of a slot that is neither a parameter nor bound here.
             if (n.a >= f_.arity && binds_[n.a] == NO_NODE) reads_beyond_params_ = true;
+            if (bound(n.a)) ++stmt_reads_[bind_stmts_[n.a]];
             // A binding's value is written where its name is read, so it is
             // checked the first time its name is read *here* -- where it will
             // be evaluated. A binding only ever read in lazy positions is never
@@ -1049,12 +1151,14 @@ private:
             //
             // A read of a binding whose check is still running is the binding
             // naming itself, which would expand for ever.
-            if (n.a >= f_.arity && binds_[n.a] != NO_NODE) {
-                if (bind_state_[n.a] == 1) return false;
-                if (bind_state_[n.a] == 0) {
-                    bind_state_[n.a] = 1;
+            if (bound(n.a)) {
+                const uint32_t stmt = bind_stmts_[n.a];
+                const uint8_t state = bind_state_[stmt];
+                if (state == 1) return false;
+                if (state == 0) {
+                    bind_state_[stmt] = 1;
                     const bool ok = check(binds_[n.a], depth + 1);
-                    bind_state_[n.a] = 2;
+                    bind_state_[stmt] = 2;
                     if (!ok) return false;
                 }
             }
@@ -1075,16 +1179,18 @@ private:
                 return check(n.a, depth + 1) && check(n.b, depth + 1) &&
                        (n.c == NO_NODE || check(n.c, depth + 1));
             }
-            case Op::Block:
+            case Op::Block: {
+                BindScope scope(binds_, bind_stmts_, &scope_sig_);
                 for (uint32_t i = 0; i < n.b; ++i) {
                     uint32_t stmt = img_.kid(n.a + i);
                     if (Op(img_.node(stmt).op) == Op::Bind) {
-                        if (!check_bind(img_.node(stmt), depth + 1)) return false;
+                        if (!check_bind(stmt, scope, depth + 1)) return false;
                         continue;
                     }
                     if (!check(stmt, depth + 1)) return false;
                 }
                 return true;
+            }
             case Op::Force: case Op::Neg: case Op::Not: case Op::BitNot: case Op::TypeIs:
             case Op::ListIsEmpty: case Op::ListTail: case Op::ListIsCons: case Op::ListHead:
                 return check(n.a, depth + 1);
@@ -1275,40 +1381,73 @@ private:
     // twice -- which is why reading twice is only allowed for something small
     // that calls nothing.
 
-    /// A `let` statement. Answers false to refuse the whole function.
-    bool check_bind(const Node& n, int depth) {
+    /// A `let` statement, entered into `scope`. Answers false to refuse the
+    /// whole function.
+    bool check_bind(uint32_t stmt, BindScope& scope, int depth) {
+        const Node& n = img_.node(stmt);
         // Strict values are computed at the binding point and kept in the
         // same per-invocation storage used for memoized lazy bindings. This
         // admits computed match subjects without duplicating their work.
         // Into a parameter's slot, or past the end of the frame: neither is
         // something the compiler emits, and neither has a meaning here.
         if (n.a < f_.arity || n.a >= f_.slots) return false;
-        // One slot, one binding. Bound twice, a read means whichever came
-        // before it, and this has no way to say which that was.
-        //
-        // The same `bind` met again is not a second binding. A `match` that
-        // starts with a switch jumps *into* its chain of arms, so each target
-        // is a suffix of that chain and the walk reaches an arm's binds once
-        // through the chain and once through the switch. Refusing that refused
-        // every function whose `match` had a switch -- a union's, and a list's
-        // tagged by atoms -- and said nothing about why.
-        if (binds_[n.a] != NO_NODE) {
-            if (binds_[n.a] == n.b && strict_binds_[n.a] == ((n.flags & F_STRICT) != 0)) return true;
-            why(n, "a slot bound twice");
-            return false;
-        }
-        binds_[n.a] = n.b;
-        strict_binds_[n.a] = (n.flags & F_STRICT) != 0;
+        // A slot bound here and elsewhere is whichever binding is in scope:
+        // see "Bindings in scope". The same `bind` met again -- a `match`
+        // that starts with a switch jumps *into* its chain of arms, so the
+        // walk reaches an arm's binds once through the chain and once through
+        // the switch -- is the same binding, in perhaps another scope.
+        scope.enter(img_, stmt);
+        note_binding(stmt);
         // A strict binding runs where it stands, so it is checked here. Any
         // other is checked at its first evaluated read (see `check`'s `Local`),
         // and one nobody evaluates is never checked at all.
         if (n.flags & F_STRICT) {
-            bind_state_[n.a] = 1;
+            const uint8_t state = bind_state_[stmt];
+            if (state != 0) return state == 2;
+            bind_state_[stmt] = 1;
             const bool ok = check(n.b, depth + 1);
-            bind_state_[n.a] = 2;
+            bind_state_[stmt] = 2;
             return ok;
         }
         return true;
+    }
+
+    /// The bindings in scope where a walk stands, kept to be stood in again.
+    struct Scope {
+        std::vector<uint32_t> binds, stmts;
+        uint64_t sig = 0;
+    };
+    Scope here() const { return Scope{binds_, bind_stmts_, scope_sig_}; }
+
+    /// `f` asked in `sc` rather than in the scope the walk is in.
+    template <class F>
+    void in_scope(const Scope& sc, F f) {
+        std::vector<uint32_t> b = sc.binds, s = sc.stmts;
+        std::swap(binds_, b);
+        std::swap(bind_stmts_, s);
+        const uint64_t sig = scope_sig_;
+        scope_sig_ = sc.sig;
+        f();
+        std::swap(binds_, b);
+        std::swap(bind_stmts_, s);
+        scope_sig_ = sig;
+    }
+
+    /// Remember the binding `stmt` and the scope it was met in, once a scope.
+    void note_binding(uint32_t stmt) {
+        auto& scopes = bind_scopes_[stmt];
+        if (scopes.empty()) bind_order_.push_back(stmt);
+        for (const Scope& sc : scopes) {
+            if (sc.sig == scope_sig_) return;
+        }
+        scopes.push_back(here());
+    }
+
+    /// Is `slot` a `let`'s here?
+    bool bound(uint32_t slot) const { return slot >= f_.arity && slot < binds_.size() && binds_[slot] != NO_NODE; }
+    /// Is it a strict one's?
+    bool strict_bound(uint32_t slot) const {
+        return bound(slot) && (img_.node(bind_stmts_[slot]).flags & F_STRICT);
     }
 
     /// May every `let` in the body be written where its name is read?
@@ -1322,21 +1461,26 @@ private:
     std::string refused_bind_;
 
     bool bindings_substitutable() {
-        for (uint32_t slot = f_.arity; slot < f_.slots; ++slot) {
+        for (uint32_t stmt : bind_order_) {
+            const Node& b = img_.node(stmt);
+            const uint32_t reads = stmt_reads_[stmt];
             // A strict binding is computed by its own statement, before any
             // read of it can run, and every read after is a load of what it
             // remembered (`Emitter::settled_`) -- no code is written twice,
             // so nothing here bounds it. Most are a `match` on a call.
-            if (binds_[slot] == NO_NODE || reads_[slot] <= 1 || strict_binds_[slot]) continue;
-            bool calls = false;
-            const uint32_t cost = expand_cost(binds_[slot], 0, &calls);
-            // A binding that calls anything is remembered once computed, so
-            // reading it twice costs code, not work: the bound is on the code.
-            if (cost > (calls ? kMaxMemoCode : kMaxBindDuplication)) {
-                refused_bind_ = "slot " + std::to_string(slot) + ", read " + std::to_string(reads_[slot]) +
-                                " times, " + std::to_string(cost) + " nodes of " +
-                                op_name(Op(img_.node(binds_[slot]).op)) + (calls ? " that calls" : "");
-                return false;
+            if (reads <= 1 || (b.flags & F_STRICT)) continue;
+            for (const Scope& sc : bind_scopes_[stmt]) {
+                bool calls = false;
+                uint32_t cost = 0;
+                in_scope(sc, [&] { cost = expand_cost(b.b, 0, &calls); });
+                // A binding that calls anything is remembered once computed, so
+                // reading it twice costs code, not work: the bound is on the code.
+                if (cost > (calls ? kMaxMemoCode : kMaxBindDuplication)) {
+                    refused_bind_ = "slot " + std::to_string(b.a) + ", read " + std::to_string(reads) +
+                                    " times, " + std::to_string(cost) + " nodes of " +
+                                    op_name(Op(img_.node(b.b).op)) + (calls ? " that calls" : "");
+                    return false;
+                }
             }
         }
         return true;
@@ -1363,9 +1507,7 @@ private:
                 // A strict binding is a load wherever it is read (its statement
                 // ran first: `Emitter::settled_`), so a name for one -- what a
                 // pattern binds a `match`'s subject to -- costs what a load does.
-                if (n.a >= f_.arity && binds_[n.a] != NO_NODE && !strict_binds_[n.a]) {
-                    return expand_cost(binds_[n.a], depth + 1, calls);
-                }
+                if (bound(n.a) && !strict_bound(n.a)) return expand_cost(binds_[n.a], depth + 1, calls);
                 return 1;
             DREAM_PRIMITIVE_CASES
             case Op::Apply:
@@ -1387,6 +1529,8 @@ private:
                 return c;
             }
             case Op::Block: {
+                BindScope scope(binds_, bind_stmts_, &scope_sig_);
+                scope.enter_block(img_, n);
                 uint32_t c = 1;
                 for (uint32_t i = 0; i < n.b; ++i) {
                     const uint32_t stmt = img_.kid(n.a + i);
@@ -1455,9 +1599,7 @@ private:
                 return (n.flags & F_STRICT) ? strict_of(n.b, depth + 1) : 0;
             case Op::Local:
                 // A bound slot is the expression it was bound to, written here.
-                if (n.a >= f_.arity && binds_[n.a] != NO_NODE) {
-                    return strict_of(binds_[n.a], depth + 1);
-                }
+                if (bound(n.a)) return strict_of(binds_[n.a], depth + 1);
                 return SlotSet::bit(n.a);
             case Op::SwitchAtom: case Op::SwitchHead: {
                 SlotSet arms = strict_of(img_.kid(n.b + n.c - 1), depth + 1);
@@ -1493,6 +1635,8 @@ private:
                 // The container; the keys are constants and the values lazy.
                 return strict_of(n.a, depth + 1);
             case Op::Block: {
+                BindScope scope(binds_, bind_stmts_, &scope_sig_);
+                scope.enter_block(img_, n);
                 SlotSet s = 0;
                 for (uint32_t i = 0; i < n.b; ++i) {
                     uint32_t stmt = img_.kid(n.a + i);
@@ -1557,15 +1701,17 @@ private:
         const int rounds = int(2 * f_.arity) + 2;
         for (int round = 0; round < rounds; ++round) {
             bool changed = false;
-            for (uint32_t site : call_sites_) {
-                const Node& n = img_.node(site);
-                for (uint32_t i = 0; i < n.c && i < f_.arity; ++i) {
-                    Ty t = join(slot_ty_[i], ty(img_.kid(n.b + i), 0));
-                    if (t != slot_ty_[i]) {
-                        slot_ty_[i] = t;
-                        changed = true;
+            for (size_t k = 0; k < call_sites_.size(); ++k) {
+                const Node& n = img_.node(call_sites_[k]);
+                in_scope(site_scopes_[k], [&] {
+                    for (uint32_t i = 0; i < n.c && i < f_.arity; ++i) {
+                        Ty t = join(slot_ty_[i], ty(img_.kid(n.b + i), 0));
+                        if (t != slot_ty_[i]) {
+                            slot_ty_[i] = t;
+                            changed = true;
+                        }
                     }
-                }
+                });
             }
             if (!changed) break;
         }
@@ -1610,9 +1756,7 @@ private:
             case Op::Bind:
                 return !(n.flags & F_STRICT) || force_order(n.b, depth + 1, out);
             case Op::Local:
-                if (n.a >= f_.arity && binds_[n.a] != NO_NODE) {
-                    return force_order(binds_[n.a], depth + 1, out);
-                }
+                if (bound(n.a)) return force_order(binds_[n.a], depth + 1, out);
                 out.push_back(n.a);
                 return true;
             case Op::Force: case Op::Neg: case Op::Not: case Op::BitNot: case Op::TypeIs: case Op::ListIsEmpty:
@@ -1661,6 +1805,8 @@ private:
                 return false;
             }
             case Op::Block: {
+                BindScope scope(binds_, bind_stmts_, &scope_sig_);
+                scope.enter_block(img_, n);
                 for (uint32_t i = 0; i < n.b; ++i) {
                     uint32_t stmt = img_.kid(n.a + i);
                     bool last = (i + 1 == n.b);
@@ -1756,6 +1902,13 @@ private:
         }
     }
 
+    /// A self call compiled code makes, and the scope it is made in, which is
+    /// where its arguments' types are asked (`float_slots`).
+    void add_site(uint32_t idx) {
+        call_sites_.push_back(idx);
+        site_scopes_.push_back(here());
+    }
+
     void collect_calls(uint32_t idx, int depth, bool tail = false) {
         if (depth > 256) return;
         // A self call the interpreter makes is an ordinary call, entering
@@ -1765,7 +1918,7 @@ private:
         if (Op(n.op) == Op::Apply || is_primitive(Op(n.op))) {
             const CallKind kind = kind_at(idx);
             if (kind == CallKind::Self) {
-                call_sites_.push_back(idx);
+                add_site(idx);
                 if (n.flags & F_TAIL) tail_self_ = true;
                 else recurses_ = true;
             }
@@ -1776,14 +1929,14 @@ private:
             case Op::Local:
                 // A `let` is written where its name is read -- here, since this
                 // walk only reaches evaluated positions.
-                if (n.a >= f_.arity && n.a < binds_.size() && binds_[n.a] != NO_NODE) {
+                if (bound(n.a)) {
                     const uint32_t value = binds_[n.a];
                     if (tail && kind_at(value) == CallKind::Self &&
                         !(img_.node(value).flags & F_TAIL)) {
                         // `let rest = f ..; .. rest` read as the answer: a tail
                         // call written through a name.
-                        call_sites_.push_back(value);
-                        let_steps_.insert(idx);
+                        add_site(value);
+                        let_steps_.insert(let_step_key(idx, bind_stmts_[n.a]));
                         collect_args(value, img_.node(value), CallKind::Self, depth);
                         return;
                     }
@@ -1806,10 +1959,12 @@ private:
                 collect_calls(n.b, depth + 1, tail);
                 if (n.c != NO_NODE) collect_calls(n.c, depth + 1, tail);
                 return;
-            case Op::Block:
+            case Op::Block: {
                 // A strict `let` runs where it stands; any other is reached
                 // through its name, above. The statements that are not the last
                 // run only when strict, as `block` emits them.
+                BindScope scope(binds_, bind_stmts_, &scope_sig_);
+                scope.enter_block(img_, n);
                 for (uint32_t i = 0; i < n.b; ++i) {
                     const uint32_t stmt = img_.kid(n.a + i);
                     const Node& sn = img_.node(stmt);
@@ -1821,6 +1976,7 @@ private:
                     if (last || (sn.flags & F_STRICT)) collect_calls(stmt, depth + 1, last && tail);
                 }
                 return;
+            }
             case Op::Force: case Op::Neg: case Op::Not: case Op::BitNot: case Op::TypeIs:
             case Op::ListIsEmpty: case Op::ListTail: case Op::ListIsCons: case Op::ListHead:
                 collect_calls(n.a, depth + 1);
@@ -1834,7 +1990,7 @@ private:
                     const Node& r = img_.node(n.b);
                     if (call_sites_.size() == before && kind_at(n.b) == CallKind::Self &&
                         !(r.flags & F_TAIL)) {
-                        call_sites_.push_back(n.b);
+                        add_site(n.b);
                         steps_.insert(idx);
                         collect_args(n.b, r, CallKind::Self, depth);
                         return;
@@ -1889,26 +2045,33 @@ private:
     std::vector<Ty> slot_ty_;
     std::vector<uint32_t> call_sites_;
     std::vector<uint32_t> calls_;
-    /// Per slot: the node a `let` bound it to, or `NO_NODE`; and how many times
-    /// the body reads it. Both are filled in by `check` as it walks.
+    /// Per slot, the value and the statement of the `let` in scope where a
+    /// walk stands, or `NO_NODE` (see "Bindings in scope"); and how many
+    /// times the body reads each slot, filled in by `check` as it walks.
     std::vector<uint32_t> binds_;
+    std::vector<uint32_t> bind_stmts_;
+    uint64_t scope_sig_ = 0;
     std::vector<uint32_t> reads_;
+    /// Per `let` statement: how many times it is read, and every scope it
+    /// was met in, in the order the statements were first met.
+    std::unordered_map<uint32_t, uint32_t> stmt_reads_;
+    std::unordered_map<uint32_t, std::vector<Scope>> bind_scopes_;
+    std::vector<uint32_t> bind_order_;
+    std::vector<Scope> site_scopes_;
     /// Parameters every self call moves rather than evaluates. Computed in
     /// `run` before `strict_of`, which has to know.
     SlotSet carried_ = 0;
     /// Parameters whose self-call arguments are evaluated. See "Which
     /// arguments are evaluated" in `run`.
     SlotSet eager_ = 0;
-    /// Per slot: 0 a binding not yet checked, 1 one being checked, 2 checked.
-    std::vector<uint8_t> bind_state_;
-    std::vector<uint8_t> strict_binds_;
-    std::vector<uint8_t> bind_inline_;
+    /// Per `let` statement: 0 not yet checked, 1 being checked, 2 checked.
+    std::unordered_map<uint32_t, uint8_t> bind_state_;
     /// How each call `check` reached is made. See `check_apply`.
     std::unordered_map<uint32_t, CallKind> kinds_;
     /// The two shapes of step found by `collect_calls`: an `e + f ..` in
     /// result position, and a `let` of a self call read as the answer.
     std::unordered_set<uint32_t> steps_;
-    std::unordered_set<uint32_t> let_steps_;
+    std::unordered_set<uint64_t> let_steps_;
     /// See "What the interpreter evaluates".
     std::unordered_set<uint32_t> interp_;
     bool nested_calls_ = false;
@@ -1928,9 +2091,7 @@ public:
         switch (Op(n.op)) {
             case Op::ConstFloat: return Ty::Float;
             case Op::Local:
-                if (n.a >= f_.arity && n.a < binds_.size() && binds_[n.a] != NO_NODE) {
-                    return ty(binds_[n.a], depth + 1);
-                }
+                if (bound(n.a)) return ty(binds_[n.a], depth + 1);
                 return n.a < slot_ty_.size() ? slot_ty_[n.a] : Ty::Any;
             case Op::Force: case Op::Neg: return ty(n.a, depth + 1);
             case Op::SwitchAtom: case Op::SwitchHead: {
@@ -1950,8 +2111,12 @@ public:
                 Ty e = n.c == NO_NODE ? Ty::Any : ty(n.c, depth + 1);
                 return join(t, e);
             }
-            case Op::Block:
-                return n.b == 0 ? Ty::Any : ty(img_.kid(n.a + n.b - 1), depth + 1);
+            case Op::Block: {
+                if (n.b == 0) return Ty::Any;
+                BindScope scope(binds_, bind_stmts_, &scope_sig_);
+                scope.enter_block(img_, n);
+                return ty(img_.kid(n.a + n.b - 1), depth + 1);
+            }
             case Op::Add: case Op::Sub: case Op::Mul: case Op::Div: case Op::Mod:
                 return arith_ty(ty(n.a, depth + 1), ty(n.b, depth + 1));
             DREAM_PRIMITIVE_CASES
@@ -2194,9 +2359,10 @@ public:
             const Analysis& a, const PeerFns* peers = nullptr, llvm::Function* preset = nullptr)
         : ctx_(ctx), mod_(mod), rt_(rt), img_(img), fi_(fi), f_(img.func(fi)),
           recurses_(a.recurses), float_slots_(a.float_slots), carried_(a.carried),
-          force_first_(a.force_first), binds_(a.binds), peel_first_(a.peel),
-          ret_dbl_(preset && a.ret_dbl), eager_(a.eager), bind_inline_(a.bind_inline),
-          bind_memo_(a.bind_memo), accumulate_(a.accumulate), steps_(a.steps),
+          force_first_(a.force_first), binds_(f_.slots, NO_NODE), bind_stmts_(f_.slots, NO_NODE),
+          unique_stmts_(a.unique_stmts), bound_(a.bound), multi_(a.multi),
+          peel_first_(a.peel), ret_dbl_(preset && a.ret_dbl), eager_(a.eager), inline_stmts_(a.inline_stmts),
+          memo_stmts_(a.memo_stmts), accumulate_(a.accumulate), steps_(a.steps),
           let_steps_(a.let_steps), cons_steps_(a.cons_steps),
           kinds_(a.kinds), interp_(a.interpreted), nested_calls_(a.nested_calls), peers_(peers),
           preset_(preset), b_(ctx) {}
@@ -2311,8 +2477,20 @@ private:
     /// A remembered `let`'s value, computed at most once an iteration.
     JV bound_value(uint32_t slot);
     bool is_memo(uint32_t slot) const {
-        return slot < bind_memo_.size() && bind_memo_[slot] && slot < memo_.size() && memo_[slot];
+        return slot < memo_.size() && memo_[slot] && bind_stmts_[slot] != NO_NODE &&
+               memo_stmts_.count(bind_stmts_[slot]);
     }
+    /// The binding a snapshot made here puts in `slot`: the one in scope, or
+    /// the one `let` that binds the slot anywhere -- a thunk nobody before
+    /// its statement can read, which is why it may be made early -- or none,
+    /// for a slot bound in several places and in none of them here.
+    uint32_t table_stmt(uint32_t slot) const {
+        if (bind_stmts_[slot] != NO_NODE) return bind_stmts_[slot];
+        return multi_[slot] ? NO_NODE : unique_stmts_[slot];
+    }
+    /// A `let` of a slot bound in more than one place, met: what the slot
+    /// meant before is forgotten, here and in the snapshot.
+    void rebind(uint32_t stmt);
     /// The slots of strict bindings whose statement has been written in the
     /// block being written: a read of one after it is a load of its memo,
     /// since the statement ran first on every path that reaches the read.
@@ -2437,20 +2615,28 @@ private:
     const SlotSet carried_;
     /// Slots to force on entry, in the order the body would have forced them.
     const std::vector<uint32_t> force_first_;
-    /// Per slot, the node a `let` bound it to, or `NO_NODE`.
-    const std::vector<uint32_t> binds_;
+    /// Per slot, the value and statement of the `let` in scope where the
+    /// emitter stands, or `NO_NODE`; see "Bindings in scope". `scope_sig_`
+    /// differs whenever they do.
+    std::vector<uint32_t> binds_;
+    std::vector<uint32_t> bind_stmts_;
+    uint64_t scope_sig_ = 0;
+    /// See `Analysis::unique_stmts`.
+    const std::vector<uint32_t> unique_stmts_;
+    const std::vector<uint8_t> bound_;
+    const std::vector<uint8_t> multi_;
     /// The loop's first iteration is written separately, over tagged slots.
     const bool peel_first_;
     /// A peer that answers a raw double, its bits in the return register.
     const bool ret_dbl_;
     /// Parameters whose self-call arguments are evaluated; see `Analysis`.
     const SlotSet eager_;
-    const std::vector<uint8_t> bind_inline_;
-    const std::vector<uint8_t> bind_memo_;
+    const std::unordered_set<uint32_t> inline_stmts_;
+    const std::unordered_set<uint32_t> memo_stmts_;
     /// See `Analysis::accumulate`.
     const bool accumulate_;
     const std::unordered_set<uint32_t> steps_;
-    const std::unordered_set<uint32_t> let_steps_;
+    const std::unordered_set<uint64_t> let_steps_;
     /// See `Analysis::cons_steps`.
     const std::unordered_set<uint32_t> cons_steps_;
     /// The run being built ahead: its first cell and its last, zero until the
@@ -2484,13 +2670,23 @@ private:
     /// The frame this iteration's suspensions share, or zero until one is
     /// needed. See `snapshot`.
     llvm::Value* snap_ = nullptr;
-    /// `binds_` as a constant array the runtime can read, restricted to the
-    /// bindings a suspension can reach. Its contents are only known once the
-    /// whole body is written, so it is filled in by `finish_bind_table`.
-    llvm::GlobalVariable* bind_table_ = nullptr;
-    /// Slots a suspended expression may read, found by `mark_refs`.
+    /// The bindings a snapshot fills in, as constant arrays the runtime can
+    /// read: one for each scope a snapshot is made in, the binding of each
+    /// slot as `table_stmt` has it there. Restricted to the bindings a
+    /// suspension can reach, which is only known once the whole body is
+    /// written, so they are filled in by `finish_bind_table`.
+    struct BindTable {
+        llvm::GlobalVariable* table;
+        std::vector<uint32_t> stmts;
+    };
+    std::vector<BindTable> bind_tables_;
+    llvm::GlobalVariable* bind_table();
+    /// Slots a suspended expression may read, found by `mark_refs`; and the
+    /// nodes, and bindings, already followed, each in the scope it was
+    /// followed in (a node means other bindings in another).
     SlotSet refs_ = 0;
-    std::unordered_set<uint32_t> ref_seen_;
+    std::unordered_set<std::pair<uint32_t, uint64_t>, PairHash> ref_seen_;
+    std::unordered_set<std::pair<uint32_t, uint64_t>, PairHash> binds_marked_;
     /// True while the slots still hold what the interpreter's own frame for
     /// this call holds -- before the first back-edge, in the invocation the
     /// interpreter entered. That frame can then be the snapshot. See
@@ -2547,7 +2743,7 @@ private:
         rt_get_, rt_set_, rt_set_many_, rt_cons_, rt_make_list_, rt_make_array_, rt_make_record_, rt_make_map_,
         rt_literal_str_,
         rt_global_, rt_snapshot_, rt_thunk_, rt_apply_, rt_peek_, rt_adopt_, rt_yield_frame_,
-        rt_cons_after_, rt_set_tail_, rt_type_error_got_, rt_settle_, rt_stack_floor_;
+        rt_cons_after_, rt_set_tail_, rt_type_error_got_, rt_settle_, rt_rebind_, rt_stack_floor_;
     /// The adopt arm of the `snapshot` being written, joined at its end.
     llvm::BasicBlock* pending_adopt_ = nullptr;
     /// The frame that arm adopted: the entry frame, or its copy on the heap
@@ -2647,6 +2843,9 @@ void Emitter::declare_helpers() {
     rt_settle_ = mod_.getOrInsertFunction(
         "dream_rt_settle",
         llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr_, i64_, i32_, i64_}, false));
+    rt_rebind_ = mod_.getOrInsertFunction(
+        "dream_rt_rebind",
+        llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr_, i64_, i32_, i32_}, false));
     rt_make_map_ = mod_.getOrInsertFunction(
         "dream_rt_make_map", llvm::FunctionType::get(i64_, {ptr_}, false));
     rt_literal_str_ = mod_.getOrInsertFunction(
@@ -3086,9 +3285,12 @@ llvm::Value* Emitter::snapshot_vals() {
         if (i < f_.arity) {
             v = slot_is_dbl(i) ? box(flt(b_.CreateLoad(dbl_, slots_[i])))
                                : b_.CreateLoad(i64_, slots_[i]);
-        } else if (is_memo(i)) {
+        } else if (i < memo_.size() && memo_[i] && table_stmt(i) != NO_NODE && memo_stmts_.count(table_stmt(i))) {
             // A binding this iteration has computed hands over its value; one
-            // it has not, zero, and the runtime makes the thunk.
+            // it has not, zero, and the runtime makes the thunk. The memo is
+            // the slot's, and a slot bound in several places is in the table
+            // only where its binding is the one in scope, which is the one the
+            // memo holds.
             v = b_.CreateLoad(i64_, memo_[i]);
         } else {
             // A bound slot is filled by the runtime, with a thunk of its
@@ -3116,11 +3318,7 @@ llvm::Value* Emitter::snapshot() {
     b_.CreateBr(done);
 
     b_.SetInsertPoint(make);
-    if (!bind_table_) {
-        auto* ty = llvm::ArrayType::get(i32_, f_.slots);
-        bind_table_ = new llvm::GlobalVariable(mod_, ty, true, llvm::GlobalValue::PrivateLinkage,
-                                               nullptr, fn_->getName() + ".binds");
-    }
+    llvm::GlobalVariable* table = bind_table();
     // Before the first back-edge of the invocation the interpreter entered,
     // the slots hold exactly what that invocation's heap frame holds -- the
     // arguments as they arrived, some since forced, which is the same values.
@@ -3135,7 +3333,7 @@ llvm::Value* Emitter::snapshot() {
         b_.CreateCondBr(b_.CreateLoad(i1_, fresh_), adopt, copy);
         b_.SetInsertPoint(adopt);
         llvm::Value* adopted =
-            b_.CreateCall(rt_adopt_, {proc_, frame_, i32c(int(f_.slots)), vals, bind_table_});
+            b_.CreateCall(rt_adopt_, {proc_, frame_, i32c(int(f_.slots)), vals, table});
         b_.CreateStore(adopted, snap_);
         adopted_ = adopted;
         auto* adopt_end = b_.GetInsertBlock();
@@ -3154,7 +3352,7 @@ llvm::Value* Emitter::snapshot() {
         closure = b_.CreateLoad(i64_, at);
     }
     llvm::Value* made = b_.CreateCall(
-        rt_snapshot_, {proc_, closure, i32c(int(f_.slots)), vals, bind_table_});
+        rt_snapshot_, {proc_, closure, i32c(int(f_.slots)), vals, table});
     b_.CreateStore(made, snap_);
     auto* make_end = b_.GetInsertBlock();
     b_.CreateBr(done);
@@ -3202,12 +3400,15 @@ llvm::Value* Emitter::snapshot() {
 void Emitter::make_iteration_state() {
     snap_ = b_.CreateAlloca(i64_, nullptr, "snap");
     b_.CreateStore(i64(0), snap_);
+    // One a slot, for whichever of its bindings is in scope: on one path a
+    // slot is bound once, and where an arm's guard fails and the next arm
+    // binds it again, `rebind` clears it first.
     memo_.assign(f_.slots, nullptr);
-    for (uint32_t i = 0; i < f_.slots; ++i) {
-        if (i < bind_memo_.size() && bind_memo_[i] && i < binds_.size() && binds_[i] != NO_NODE) {
-            memo_[i] = b_.CreateAlloca(i64_, nullptr, "memo" + std::to_string(i));
-            b_.CreateStore(i64(0), memo_[i]);
-        }
+    for (uint32_t stmt : memo_stmts_) {
+        const uint32_t i = img_.node(stmt).a;
+        if (i >= f_.slots || memo_[i]) continue;
+        memo_[i] = b_.CreateAlloca(i64_, nullptr, "memo" + std::to_string(i));
+        b_.CreateStore(i64(0), memo_[i]);
     }
 }
 
@@ -3279,14 +3480,18 @@ Emitter::JV Emitter::bound_value(uint32_t slot) {
 }
 
 void Emitter::mark_slot(uint32_t slot) {
-    if (slot >= f_.slots || refs_.test(slot)) return;
+    if (slot >= f_.slots) return;
     refs_.set(slot);
-    // A binding's thunk reads whatever its own expression reads.
-    if (slot < binds_.size() && binds_[slot] != NO_NODE) mark_refs(binds_[slot], 0);
+    // A binding's thunk reads whatever its own expression reads -- in the
+    // scope it is read in, which for a binding of a shared slot is not
+    // always the scope it was last followed in.
+    const uint32_t stmt = table_stmt(slot);
+    if (stmt == NO_NODE || !binds_marked_.insert({stmt, scope_sig_}).second) return;
+    mark_refs(img_.node(stmt).b, 0);
 }
 
 void Emitter::mark_refs(uint32_t idx, int depth) {
-    if (idx == NO_NODE || !ref_seen_.insert(idx).second) return;
+    if (idx == NO_NODE || !ref_seen_.insert({idx, scope_sig_}).second) return;
     // Too deep to follow is too deep to be sure of: every binding, then.
     if (depth > 512) {
         refs_ = ~SlotSet();
@@ -3347,7 +3552,14 @@ void Emitter::mark_refs(uint32_t idx, int depth) {
             mark_refs(n.a, depth + 1);
             run(n.b, n.c);
             return;
-        case Op::Block: case Op::MakeList: case Op::MakeArray: case Op::RecordMake:
+        case Op::Block: {
+            // A name the block binds means its own binding inside it.
+            BindScope scope(binds_, bind_stmts_, &scope_sig_);
+            scope.enter_block(img_, n);
+            run(n.a, n.b);
+            return;
+        }
+        case Op::MakeList: case Op::MakeArray: case Op::RecordMake:
             run(n.a, n.b);
             return;
         case Op::MakeMap:
@@ -3359,16 +3571,46 @@ void Emitter::mark_refs(uint32_t idx, int depth) {
     }
 }
 
-void Emitter::finish_bind_table() {
-    if (!bind_table_) return;
-    std::vector<llvm::Constant*> entries;
-    for (uint32_t i = 0; i < f_.slots; ++i) {
-        const bool reached = refs_.test(i);
-        const uint32_t bound = i < binds_.size() && reached ? binds_[i] : NO_NODE;
-        entries.push_back(llvm::ConstantInt::get(i32_, bound));
+llvm::GlobalVariable* Emitter::bind_table() {
+    std::vector<uint32_t> stmts(f_.slots, NO_NODE);
+    for (uint32_t i = f_.arity; i < f_.slots; ++i) stmts[i] = table_stmt(i);
+    for (const BindTable& t : bind_tables_) {
+        if (t.stmts == stmts) return t.table;
     }
     auto* ty = llvm::ArrayType::get(i32_, f_.slots);
-    bind_table_->setInitializer(llvm::ConstantArray::get(ty, entries));
+    auto* table = new llvm::GlobalVariable(mod_, ty, true, llvm::GlobalValue::PrivateLinkage, nullptr,
+                                           fn_->getName() + ".binds" + std::to_string(bind_tables_.size()));
+    bind_tables_.push_back({table, std::move(stmts)});
+    return table;
+}
+
+void Emitter::finish_bind_table() {
+    auto* ty = llvm::ArrayType::get(i32_, f_.slots);
+    for (const BindTable& t : bind_tables_) {
+        std::vector<llvm::Constant*> entries;
+        for (uint32_t i = 0; i < f_.slots; ++i) {
+            const uint32_t stmt = refs_.test(i) ? t.stmts[i] : NO_NODE;
+            entries.push_back(llvm::ConstantInt::get(i32_, stmt == NO_NODE ? NO_NODE : img_.node(stmt).b));
+        }
+        t.table->setInitializer(llvm::ConstantArray::get(ty, entries));
+    }
+}
+
+void Emitter::rebind(uint32_t stmt) {
+    const uint32_t slot = img_.node(stmt).a;
+    if (slot < memo_.size() && memo_[slot]) b_.CreateStore(i64(0), memo_[slot]);
+    if (slot < settled_.size()) settled_[slot] = 0;
+    // A snapshot already made holds the slot's other binding, or none: this
+    // one goes in, for the suspensions made from here on to read.
+    mark_slot(slot);
+    auto* put = bb("rebind.put");
+    auto* done = bb("rebind.done");
+    llvm::Value* snap = b_.CreateLoad(i64_, snap_);
+    b_.CreateCondBr(b_.CreateICmpNE(snap, i64(0)), put, done);
+    b_.SetInsertPoint(put);
+    b_.CreateCall(rt_rebind_, {proc_, snap, i32c(int(slot)), i32c(int(img_.node(stmt).b))});
+    b_.CreateBr(done);
+    b_.SetInsertPoint(done);
 }
 
 llvm::Value* Emitter::suspend(uint32_t idx) {
@@ -3401,7 +3643,7 @@ Emitter::JV Emitter::lazy(uint32_t idx) {
                 // A `let`'s name. Its value again when that is cheap, and
                 // otherwise what the interpreter's slot would have held: the
                 // binding, suspended.
-                if (n.a < bind_inline_.size() && bind_inline_[n.a]) return lazy(binds_[n.a]);
+                if (inline_stmts_.count(bind_stmts_[n.a])) return lazy(binds_[n.a]);
                 // Its value, when this iteration has already computed it; and
                 // otherwise the frame's own thunk for it, so that every lazy
                 // read in an iteration shares one suspension -- and one
@@ -4059,7 +4301,10 @@ Emitter::JV Emitter::node(uint32_t idx, bool tail) {
         case Op::Local:
             // A `let` has no thunk and no slot here: its value is written where
             // its name is read, which is here. See `Analyzer::check_bind`.
-            if (tail && accumulate_ && let_steps_.count(idx)) return let_step(n);
+            if (tail && accumulate_ && n.a < f_.slots && bind_stmts_[n.a] != NO_NODE &&
+                let_steps_.count(let_step_key(idx, bind_stmts_[n.a]))) {
+                return let_step(n);
+            }
             if (n.a < binds_.size() && binds_[n.a] != NO_NODE) {
                 if (is_memo(n.a) && n.a < settled_.size() && settled_[n.a]) {
                     // The snapshot still needs the slot, for whatever is
@@ -4199,13 +4444,20 @@ Emitter::JV Emitter::type_test(const Node& n) {
 Emitter::JV Emitter::block(const Node& n, bool tail) {
     JV last = tag(i64(UNIT));
     if (settled_.size() < f_.slots) settled_.resize(f_.slots, 0);
-    // The strict bindings this block settles, unsettled again however it ends.
+    // The strict bindings this block settles, unsettled again however it ends;
+    // and what a binding of a shared slot unsettled, put back.
     std::vector<uint32_t> settled_here;
+    std::vector<std::pair<uint32_t, uint8_t>> was_settled;
     struct Unsettle {
         std::vector<uint8_t>& s;
         std::vector<uint32_t>& slots;
-        ~Unsettle() { for (uint32_t slot : slots) s[slot] = 0; }
-    } unsettle{settled_, settled_here};
+        std::vector<std::pair<uint32_t, uint8_t>>& was;
+        ~Unsettle() {
+            for (uint32_t slot : slots) s[slot] = 0;
+            for (auto it = was.rbegin(); it != was.rend(); ++it) s[it->first] = it->second;
+        }
+    } unsettle{settled_, settled_here, was_settled};
+    BindScope scope(binds_, bind_stmts_, &scope_sig_);
     for (uint32_t i = 0; i < n.b; ++i) {
         uint32_t stmt = img_.kid(n.a + i);
         bool is_last = (i + 1 == n.b);
@@ -4215,6 +4467,12 @@ Emitter::JV Emitter::block(const Node& n, bool tail) {
         // has, which is what the interpreter's `advance_block` ends with too.
         if (Op(img_.node(stmt).op) == Op::Bind) {
             const Node& binding = img_.node(stmt);
+            if (binding.a >= f_.slots) return none();
+            scope.enter(img_, stmt);
+            if (multi_[binding.a]) {
+                was_settled.push_back({binding.a, settled_[binding.a]});
+                rebind(stmt);
+            }
             if (binding.flags & F_STRICT) {
                 JV v = is_memo(binding.a) ? bound_value(binding.a) : node(binding.b);
                 if (!v.v) return none();
@@ -5465,7 +5723,7 @@ void Emitter::emit_yield() {
     llvm::Value* vals = entry_alloca(i64_, "yield.vals", std::max(1u, n));
     for (uint32_t i = 0; i < n; ++i) {
         llvm::Value* v = nullptr;
-        if (i < binds_.size() && binds_[i] != NO_NODE) {
+        if (i < bound_.size() && bound_[i]) {
             v = i64(NIL_SLOT);
         } else {
             v = slot_is_dbl(i) ? box(flt(b_.CreateLoad(dbl_, slots_[i])))
@@ -6011,6 +6269,7 @@ bool Jit::Impl::create_jit() {
     add("dream_rt_make_record", reinterpret_cast<void*>(&dream_rt_make_record));
     add("dream_rt_make_map", reinterpret_cast<void*>(&dream_rt_make_map));
     add("dream_rt_settle", reinterpret_cast<void*>(&dream_rt_settle));
+    add("dream_rt_rebind", reinterpret_cast<void*>(&dream_rt_rebind));
     add("dream_rt_literal_str", reinterpret_cast<void*>(&dream_rt_literal_str));
     add("dream_rt_global", reinterpret_cast<void*>(&dream_rt_global));
     add("dream_rt_snapshot", reinterpret_cast<void*>(&dream_rt_snapshot));

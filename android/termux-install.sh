@@ -68,7 +68,10 @@ if [[ -z $source_dir ]]; then
         source_dir="$HOME/.cache/dream/source"
         if [[ ! -e $source_dir ]]; then
             mkdir -p "$(dirname "$source_dir")"
-            git clone --depth 1 --branch main https://github.com/Custards1/dream "$source_dir"
+            # The workspace's components are submodules: without them there
+            # is no seed, no standard library and no VM source to build.
+            git clone --depth 1 --branch main --recurse-submodules --shallow-submodules \
+                https://github.com/Custards1/dream "$source_dir"
         fi
     fi
 fi

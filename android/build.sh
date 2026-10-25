@@ -3,10 +3,12 @@
 # Dependency sources are supplied by the caller; no downloads happen here.
 set -euo pipefail
 if [[ $# != 4 ]]; then
-    echo "usage: ANDROID_NDK_ROOT=... $0 arm64-v8a|x86_64 OUTPUT LIBFFI_SOURCE OPENSSL_SOURCE" >&2
+    echo "usage: ANDROID_NDK_ROOT=... $0 arm64-v8a|aarch64|x86_64 OUTPUT LIBFFI_SOURCE OPENSSL_SOURCE" >&2
     exit 2
 fi
 abi=$1
+# `aarch64` is what the processor is called everywhere but the NDK.
+case $abi in aarch64|arm64) abi=arm64-v8a ;; esac
 mkdir -p "$2"
 out=$(cd "$2" && pwd)
 ffi=$(cd "$3" && pwd)

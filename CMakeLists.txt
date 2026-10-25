@@ -22,8 +22,15 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 option(DREAM_TERMUX "Native on-device build using Termux's Android toolchain" OFF)
 if(ANDROID OR DREAM_TERMUX)
   set(DREAM_JIT_DEFAULT OFF)
-  if(ANDROID AND NOT CMAKE_ANDROID_ARCH_ABI MATCHES "^(arm64-v8a|x86_64)$")
-    message(FATAL_ERROR "Dream Android requires arm64-v8a or x86_64")
+  # The NDK names the ABI (`arm64-v8a`); a native build on the device --
+  # Termux -- has no NDK toolchain to say so, and only the processor
+  # (`aarch64`). Either names a 64-bit ARM or x86 target, and either will do.
+  set(DREAM_ANDROID_ARCH "${CMAKE_ANDROID_ARCH_ABI}")
+  if(NOT DREAM_ANDROID_ARCH)
+    set(DREAM_ANDROID_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+  endif()
+  if(NOT DREAM_ANDROID_ARCH MATCHES "^(arm64-v8a|aarch64|arm64|x86_64|AMD64|amd64)$")
+    message(FATAL_ERROR "Dream Android requires a 64-bit ARM (arm64-v8a, aarch64) or x86_64 target, not '${DREAM_ANDROID_ARCH}'")
   endif()
   set(DREAM_ANDROID_API "${CMAKE_SYSTEM_VERSION}")
   if(DEFINED ANDROID_PLATFORM_LEVEL)
@@ -94,6 +101,25 @@ set(DREAM_LLVM_RTTI "NO")
 # independent: LLVM's are (it builds with LLVM_ENABLE_PIC), libffi's only when
 # configured `--with-pic`. shell.nix and nix/dream-vm.nix build one that is.
 # ---------------------------------------------------------------------------
+# A self-contained VM: everything but the C library linked in -- libffi,
+# OpenSSL and the C++ runtime as archives -- so one binary runs on whatever
+# Linux the toolchain is unpacked on, given a glibc as new as the one it was
+# built against. This is how the published toolchains are built
+# (dream-mindv2/toolchain). The C library stays shared, because `std.ffi`
+# opens the system's libraries with `dlopen`, which a fully static binary
+# cannot. It needs those archives to be there: PIC libffi and OpenSSL
+# (DREAM_FFI_LIB, OPENSSL_ROOT_DIR; an OpenSSL built without zlib, as is its
+# default) and the static C++ runtime (libstdc++-static on RHEL-likes). The
+# JIT stays optional -- with no LLVM the build is interpreter-only, as any
+# build is -- and with one, LLVM's own system libraries (zlib, zstd, which
+# LLVM uses for compressed debug sections) are linked as archives too
+# (`dream_llvm_syslibs`). The VM itself uses neither.
+option(DREAM_SELF_CONTAINED "Link libffi, OpenSSL and the C++ runtime statically (Linux)" OFF)
+if(DREAM_SELF_CONTAINED)
+  set(DREAM_LINK_DEPS "STATIC" CACHE STRING "" FORCE)
+  set(OPENSSL_USE_STATIC_LIBS TRUE)
+endif()
+
 set(DREAM_LINK_DEPS "PREFER_STATIC" CACHE STRING
     "How to link LLVM and libffi: PREFER_STATIC, STATIC or SHARED")
 set_property(CACHE DREAM_LINK_DEPS PROPERTY STRINGS PREFER_STATIC STATIC SHARED)
@@ -146,8 +172,16 @@ function(dream_llvm_syslibs raw out_libs out_missing)
         continue()
       endif()
 
-      string(MAKE_C_IDENTIFIER "DREAM_LLVM_SYSLIB_${CMAKE_MATCH_1}" probe_var)
-      find_library(${probe_var} NAMES ${CMAKE_MATCH_1} HINTS ${dirs})
+      set(name "${CMAKE_MATCH_1}")
+      string(MAKE_C_IDENTIFIER "DREAM_LLVM_SYSLIB_${name}" probe_var)
+      # Asked by name: a MATCHES below would overwrite CMAKE_MATCH_1.
+      if(DREAM_SELF_CONTAINED AND NOT name MATCHES "^(m|dl|pthread|rt|c)$")
+        # zlib, zstd and their like as archives, so the VM needs no copy of
+        # them on the machine it runs on; the C library's own parts stay shared.
+        find_library(${probe_var} NAMES lib${name}.a ${name} HINTS ${dirs})
+      else()
+        find_library(${probe_var} NAMES ${name} HINTS ${dirs})
+      endif()
 
       if(${probe_var})
         # The resolved path, not `-l${name}`. Having asked where the library is,
@@ -158,7 +192,7 @@ function(dream_llvm_syslibs raw out_libs out_missing)
         # `cannot find -l` one step later.
         list(APPEND libs "${${probe_var}}")
       else()
-        list(APPEND missing "-l${CMAKE_MATCH_1}")
+        list(APPEND missing "-l${name}")
       endif()
 
     else()
@@ -929,11 +963,26 @@ if(WIN32)
     ncrypt
     bcrypt)
 else()
-  target_link_libraries(
-    dream
-    PRIVATE
-    OpenSSL::SSL
-    OpenSSL::Crypto)
+  if(DREAM_SELF_CONTAINED)
+    # The archives themselves, not FindOpenSSL's targets: for static
+    # libraries those add ZLIB::ZLIB, in case OpenSSL was built with zlib --
+    # which the toolchain's is not (OpenSSL's default, `no-zlib`), and which
+    # would make every self-contained build need a zlib it never uses. What
+    # libcrypto does need of the system is threads and dlopen.
+    target_link_libraries(
+      dream
+      PRIVATE
+      "${OPENSSL_SSL_LIBRARY}"
+      "${OPENSSL_CRYPTO_LIBRARY}"
+      Threads::Threads
+      ${CMAKE_DL_LIBS})
+  else()
+    target_link_libraries(
+      dream
+      PRIVATE
+      OpenSSL::SSL
+      OpenSSL::Crypto)
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -1146,6 +1195,11 @@ target_link_libraries(
   dream_cli
   PRIVATE
   dream)
+
+if(DREAM_SELF_CONTAINED AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
+  target_link_options(dream PRIVATE -static-libstdc++ -static-libgcc)
+  target_link_options(dream_cli PRIVATE -static-libstdc++ -static-libgcc)
+endif()
 
 if(DREAM_ENABLE_GRAPHICS)
   if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID OR DREAM_TERMUX)

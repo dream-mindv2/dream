@@ -2,12 +2,17 @@
 
 ## Build and install in Termux
 
-Use 64-bit Termux on **Android 14 or newer**. In a checkout containing Android
-support, run:
+Use 64-bit Termux on **Android 14 or newer**, on an arm64 (aarch64) or x86_64
+device. In a checkout of the workspace with its submodules, run:
 
 ```sh
+git clone --recurse-submodules https://github.com/Custards1/dream ~/dream
+cd ~/dream
 bash dream/android/termux-install.sh
 ```
+
+The VM, compiler and standard library are submodules of the workspace; a
+checkout cloned without them has `git submodule update --init` to fetch them.
 
 The installer installs dependencies with `pkg`, builds the interpreter and
 self-hosted compiler on your device, runs VM and Android smoke tests, and

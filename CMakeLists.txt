@@ -1329,6 +1329,20 @@ include(GNUInstallDirs)
 # into ~/.local -- as `mind build vm` already links it (std.build.cc, gnu.dr).
 # Only the installed copy: the one in the build tree keeps CMake's absolute
 # path, and nothing that runs from there changes.
+#
+# CMake's Android platform module empties the rpath flag ("Android reportedly
+# ignores RPATH"), which drops INSTALL_RPATH without a word, and a toolchain
+# unpacked under Termux then fails with `library "libdream.so" not found`.
+# Bionic has honoured DT_RUNPATH (never DT_RPATH, hence the new dtags) and
+# $ORIGIN since API 24 and we require 34, so the flag is put back; libdream
+# gets $ORIGIN of its own for the libc++_shared.so shipped beside it.
+if(ANDROID)
+  set(CMAKE_SHARED_LIBRARY_RUNTIME_C_FLAG "-Wl,--enable-new-dtags,-rpath,")
+  set(CMAKE_SHARED_LIBRARY_RUNTIME_CXX_FLAG "-Wl,--enable-new-dtags,-rpath,")
+  set(CMAKE_SHARED_LIBRARY_RUNTIME_C_FLAG_SEP ":")
+  set(CMAKE_SHARED_LIBRARY_RUNTIME_CXX_FLAG_SEP ":")
+  set_target_properties(dream PROPERTIES INSTALL_RPATH "$ORIGIN")
+endif()
 if(APPLE)
   set_target_properties(dream_cli PROPERTIES INSTALL_RPATH "@loader_path/../${CMAKE_INSTALL_LIBDIR}")
 elseif(UNIX)

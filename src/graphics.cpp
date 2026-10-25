@@ -1,5 +1,9 @@
-// Optional Linux desktop services for std.graphics. Application state, views,
-// updates, command permissions and schemas remain in Dream.
+// Linux desktop services for std.graphics: the window an application image
+// opens. Application state, views, updates, command permissions and schemas
+// remain in Dream.
+//
+// GTK and WebKitGTK are not linked: graphics_api.hpp finds them when a window
+// is first wanted, so the VM itself still needs nothing but the C library.
 //
 // This process never runs JavaScript of its own. What the page sends arrives
 // as the JSCValue WebKit hands a script message handler, and what goes back is
@@ -8,8 +12,9 @@
 // before the view stops the view's first load from ever starting.
 #include "graphics.hpp"
 #include "image.hpp"
-#include <webkit2/webkit2.h>
-#include <jsc/jsc.h>
+#if defined(__linux__) && !defined(__ANDROID__)
+#include "builtins.hpp"
+#include "graphics_api.hpp"
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
@@ -23,7 +28,45 @@
 #include <vector>
 
 namespace dream {
+
+namespace gtk {
+bool load_graphics_api(std::string* why) {
+    static bool loaded = false;
+    static std::string failed;
+    if (loaded) return true;
+    if (!failed.empty()) { *why = failed; return false; }
+    // Where a person installs what their system's loader does not know --
+    // the same Nix and Homebrew directories `std.foreign`'s `library_dirs`
+    // names, since this is that search made from C++.
+    const std::vector<std::string> dirs = {"~/.nix-profile/lib", "/run/current-system/sw/lib",
+                                           "/nix/var/nix/profiles/default/lib", "/home/linuxbrew/.linuxbrew/lib"};
+    std::string where;
+    void* lib = find_system_library("webkit2gtk", {"libwebkit2gtk-4.1.so.0", "libwebkit2gtk-4.0.so.37"}, dirs,
+                                    &where, &failed);
+    if (!lib) {
+        failed += "\nInstall WebKitGTK 4.1 (with GTK 3) to open windows: webkit2gtk4.1 (Fedora), libwebkit2gtk-4.1-0"
+                  " (Debian, Ubuntu), webkit2gtk-4.1 (Arch), webkitgtk_4_1 (Nix).";
+        *why = failed;
+        return false;
+    }
+    std::string missing;
+#define DREAM_GTK_RESOLVE(R, name, params)                                          \
+    name = reinterpret_cast<R(*) params>(library_symbol(lib, #name));               \
+    if (!name && missing.empty()) missing = #name;
+    DREAM_GTK_FUNCTIONS(DREAM_GTK_RESOLVE)
+#undef DREAM_GTK_RESOLVE
+    if (!missing.empty()) {
+        failed = where + " has no `" + missing + "`: this needs WebKitGTK 2.40 or later, with GTK 3";
+        *why = failed;
+        return false;
+    }
+    loaded = true;
+    return true;
+}
+}  // namespace gtk
+
 namespace {
+using namespace gtk;
 constexpr size_t max_message = 1024 * 1024;
 constexpr size_t max_asset = 64 * 1024 * 1024;
 constexpr size_t max_assets = 4096;
@@ -38,8 +81,9 @@ constexpr const char* default_csp = "default-src 'none'; script-src 'self' 'wasm
     "font-src 'self' data:; media-src 'self' blob:; base-uri 'none'; form-action 'none'";
 bool ours(const char* uri) { return uri && std::strncmp(uri, origin, std::strlen(origin)) == 0; }
 
-template<class T> using Object = std::unique_ptr<T, decltype(&g_object_unref)>;
-template<class T> Object<T> hold(T* value) { return Object<T>(value, g_object_unref); }
+void unref(gpointer object) { g_object_unref(object); }
+template<class T> using Object = std::unique_ptr<T, void (*)(gpointer)>;
+template<class T> Object<T> hold(T* value) { return Object<T>(value, unref); }
 using Value = Object<JSCValue>;
 Value property(JSCValue* value, const char* key) {
     return hold(value && jsc_value_is_object(value) ? jsc_value_object_get_property(value, key) : nullptr);
@@ -394,6 +438,18 @@ struct Host {
         }
         finish_assets();
     }
+    /// This VM, as a command: `/proc/self/exe`, unless that is a dynamic
+    /// loader running the VM -- the toolchain's wrapper on NixOS and Guix --
+    /// when it is the loader and the VM's file, as this process was started.
+    static std::vector<std::string> vm_command() {
+        const auto exe = std::filesystem::canonical("/proc/self/exe");
+        if (!exe.filename().string().starts_with("ld-")) return {exe.string()};
+        std::ifstream cmdline("/proc/self/cmdline", std::ios::binary);
+        std::string loader, program;
+        std::getline(cmdline, loader, '\0');
+        std::getline(cmdline, program, '\0');
+        return {exe.string(), std::filesystem::canonical(program).string()};
+    }
     /// The backend: this VM again, running `argv` with its standard input and
     /// output as the pipes the page's commands go over.
     void start_backend(const std::vector<std::string>& argv) {
@@ -415,8 +471,11 @@ struct Host {
         // A backend is optional: without one, a command is answered
         // `backend_unavailable`, as it is in a browser tab.
         if (std::filesystem::exists(application / "backend.dream"))
-            start_backend({std::filesystem::canonical("/proc/self/exe").string(),
-                           std::filesystem::canonical(application / "backend.dream").string()});
+        {
+            auto argv = vm_command();
+            argv.push_back(std::filesystem::canonical(application / "backend.dream").string());
+            start_backend(argv);
+        }
         open_view();
     }
     /// An application image: its page from its payloads, and its program as
@@ -426,8 +485,9 @@ struct Host {
         load_assets(image);
         const auto manifest = assets.find(std::string(origin) + "app.json");
         if (manifest != assets.end() && manifest->second.find("\"backend\":true") != std::string::npos) {
-            std::vector<std::string> argv = {std::filesystem::canonical("/proc/self/exe").string(), "--headless",
-                                             std::filesystem::canonical(path).string()};
+            std::vector<std::string> argv = vm_command();
+            argv.push_back("--headless");
+            argv.push_back(std::filesystem::canonical(path).string());
             argv.insert(argv.end(), program_args.begin(), program_args.end());
             start_backend(argv);
         }
@@ -528,15 +588,32 @@ void prepare_display() {
         std::filesystem::exists("/proc/driver/nvidia/version"))
         setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 0);
 }
+
+/// A display to open a window on, and the libraries to do it with; or false,
+/// having said which is missing. The display is asked about first, so a
+/// headless run is told that and not sent looking for WebKit.
+bool open_display(const char* hint) {
+    if (!std::getenv("DISPLAY") && !std::getenv("WAYLAND_DISPLAY")) {
+        std::fprintf(stderr, "dream: graphics_unavailable: no display%s\n", hint);
+        return false;
+    }
+    std::string why;
+    if (!load_graphics_api(&why)) {
+        std::fprintf(stderr, "dream: graphics_unavailable: %s\n", why.c_str());
+        return false;
+    }
+    prepare_display();
+    if (!gtk_init_check(nullptr, nullptr)) {
+        std::fprintf(stderr, "dream: graphics_unavailable: the display could not be opened%s\n", hint);
+        return false;
+    }
+    return true;
+}
 }
 
 int run_graphics(const std::string& application) {
     if (std::getenv("DREAM_GRAPHICS_TRACE")) std::fputs("graphics: initializing display\n", stderr);
-    prepare_display();
-    if ((!std::getenv("DISPLAY") && !std::getenv("WAYLAND_DISPLAY")) || !gtk_init_check(nullptr, nullptr)) {
-        std::fputs("dream: graphics_unavailable: no display\n", stderr);
-        return 1;
-    }
+    if (!open_display("")) return 1;
     try {
         if (std::getenv("DREAM_GRAPHICS_TRACE")) std::fputs("graphics: constructing host\n", stderr);
         Host host;
@@ -560,11 +637,7 @@ int run_graphics(const std::string& application) {
 }
 
 int run_graphics_image(const Image& image, const std::string& path, const std::vector<std::string>& args) {
-    prepare_display();
-    if ((!std::getenv("DISPLAY") && !std::getenv("WAYLAND_DISPLAY")) || !gtk_init_check(nullptr, nullptr)) {
-        std::fputs("dream: graphics_unavailable: no display (run it with `--headless` for its backend alone)\n", stderr);
-        return 1;
-    }
+    if (!open_display(" (run it with `--headless` for its backend alone)")) return 1;
     try {
         Host host;
         host.start(image, path, args);
@@ -576,3 +649,16 @@ int run_graphics_image(const Image& image, const std::string& path, const std::v
     }
 }
 }
+#else
+namespace dream {
+int run_graphics(const std::string&) {
+    std::fputs("dream: graphics_unavailable: windows are opened on desktop Linux only, for now\n", stderr);
+    return 1;
+}
+int run_graphics_image(const Image&, const std::string&, const std::vector<std::string>&) {
+    std::fputs("dream: graphics_unavailable: this image is a graphics application, and windows are opened on "
+               "desktop Linux only, for now; run it with `--headless` for its backend alone\n", stderr);
+    return 1;
+}
+}
+#endif

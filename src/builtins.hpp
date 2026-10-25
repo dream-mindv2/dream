@@ -101,5 +101,14 @@ Value make_result(Heap& h, Runtime& rt, bool ok, Value value);
 ModuleDef make_math_module();
 ModuleDef make_vm_module();
 ModuleDef make_ffi_module();
+/// A C library found the way `std.ffi` finds one ("Finding a library" in
+/// ffi.cpp): `$DREAM_LIB_<NAME>`, `$DREAM_LIBRARY_PATH`, the installation's
+/// `lib`, the system's loader by each of `files`, then `dirs`. The handle and
+/// the file it came from, or nullptr and every place that was tried.
+void* find_system_library(const std::string& name, const std::vector<std::string>& files,
+                          const std::vector<std::string>& dirs, std::string* where, std::string* why);
+/// A symbol of a library `find_system_library` opened, or nullptr; it is
+/// looked for in the library and in everything it depends on.
+void* library_symbol(void* handle, const std::string& name);
 
 }  // namespace dream

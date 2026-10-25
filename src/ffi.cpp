@@ -1784,6 +1784,13 @@ NativeResult ffi_write_u8(Process& p, Value, Value* args, uint32_t) {
 
 }  // namespace
 
+void* find_system_library(const std::string& name, const std::vector<std::string>& files,
+                          const std::vector<std::string>& dirs, std::string* where, std::string* why) {
+    return run_search(Search{name, files, dirs}, where, why);
+}
+
+void* library_symbol(void* handle, const std::string& name) { return dl_sym(handle, name); }
+
 ModuleDef make_ffi_module() {
     // Strict masks: a signature is read by forcing it here, element by
     // element, so only the positions that are read whole are forced first.

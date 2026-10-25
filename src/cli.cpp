@@ -354,7 +354,7 @@ std::string skip_file(std::string& path, const std::string& MINDV2_PATH, bool* f
         if (is_file(candidate)) return candidate;
     }
     if (is_bare_name) {
-        std::string found = installed_image(path, split_dir_list(MINDV2_PATH));
+        std::string found = installed_image(path, install_dirs());
         if (!found.empty()) return found;
     }
 
@@ -379,10 +379,12 @@ std::string installed_only(const std::string& name, const std::string& MINDV2_PA
         *file_ok = false;
         return "";
     }
-    std::string found = installed_image(name, split_dir_list(MINDV2_PATH));
+    const std::vector<std::string> dirs = install_dirs();
+    std::string found = installed_image(name, dirs);
     if (found.empty()) {
-        std::fprintf(stderr, "dream: no installed image `%s` in %s\n", name.c_str(),
-                     MINDV2_PATH.c_str());
+        std::string where;
+        for (const std::string& d : dirs) where += (where.empty() ? "" : ", ") + d;
+        std::fprintf(stderr, "dream: no installed image `%s` in %s\n", name.c_str(), where.c_str());
         *file_ok = false;
     }
     return found;

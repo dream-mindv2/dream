@@ -1354,7 +1354,25 @@ std::string install_path() {
     return "";
 }
 
-std::vector<std::string> install_dirs() { return split_dir_list(install_path()); }
+/// The installation, then `~/.mindv2` when it is not already in it. A
+/// toolchain's or a package's installation is the language as it shipped,
+/// one version of it, and a program a person installed (`mind install`) is
+/// not part of that: it lives in their own `~/.mindv2`, which outlasts every
+/// toolchain they switch between, and is still found by name.
+std::vector<std::string> install_dirs() {
+    std::vector<std::string> dirs = split_dir_list(install_path());
+    const std::string home = home_dir();
+    if (!home.empty()) {
+        const std::string own = home + "/.mindv2";
+        std::error_code ec;
+        bool listed = false;
+        for (const std::string& d : dirs) {
+            if (d == own || std::filesystem::equivalent(expand_home(d), own, ec)) listed = true;
+        }
+        if (!listed) dirs.push_back(own);
+    }
+    return dirs;
+}
 
 bool is_file(const std::string& path) {
     std::error_code ec;

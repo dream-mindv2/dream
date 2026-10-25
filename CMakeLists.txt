@@ -61,7 +61,6 @@ if((ANDROID OR DREAM_TERMUX) AND DREAM_ENABLE_JIT)
 endif()
 option(DREAM_PORTABLE_POLLER "Use the portable readiness poller even on Linux" OFF)
 option(DREAM_BUILD_TESTS "Build the VM test suite" ON)
-option(DREAM_ENABLE_GRAPHICS "Build the Linux GTK/WebKit graphics host into the VM" OFF)
 
 # ---------------------------------------------------------------------------
 # LLVM discovery
@@ -803,6 +802,7 @@ set(DREAM_SOURCES
   src/os.cpp
   src/scheduler.cpp
   src/stack_thread.cpp
+  src/graphics.cpp
   src/runtime.cpp
   src/capi.cpp
   src/tensor.cpp
@@ -1211,16 +1211,6 @@ if(DREAM_SELF_CONTAINED AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
   target_link_options(dream_cli PRIVATE -static-libstdc++ -static-libgcc)
 endif()
 
-if(DREAM_ENABLE_GRAPHICS)
-  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID OR DREAM_TERMUX)
-    message(FATAL_ERROR "DREAM_ENABLE_GRAPHICS currently requires desktop Linux")
-  endif()
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(DREAM_WEBKIT REQUIRED IMPORTED_TARGET webkit2gtk-4.1>=2.40)
-  target_sources(dream_cli PRIVATE src/graphics.cpp)
-  target_compile_definitions(dream_cli PRIVATE DREAM_HAVE_GRAPHICS=1)
-  target_link_libraries(dream_cli PRIVATE PkgConfig::DREAM_WEBKIT)
-endif()
 
 if(WIN32)
   target_link_libraries(

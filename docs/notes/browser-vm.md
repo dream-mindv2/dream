@@ -88,6 +88,16 @@ it is a missing native like any other, at its first call.
 
 ## WebKitGTK, 2.54
 
+The host links neither GTK nor WebKit. `graphics_api.hpp` declares the eighty
+or so functions it calls as pointers of the same names, and fills them from
+the one handle `find_system_library` opens for `libwebkit2gtk-4.1.so.0` (or
+`-4.0.so.37`): GTK, GLib, JavaScriptCore and libsoup are its dependencies,
+and `dlsym` on a handle searches those too, so the libsoup found is the one
+that WebKit was built against. That keeps the release VM self-contained --
+it starts with nothing but the C library -- and a window is the only thing
+that asks for more. AlmaLinux 9, where the release is built, packages only
+API 4.0, so linking was never going to give a 4.1 build anyway.
+
 Five things stopped the desktop host's page from running, each silently:
 
 - **A JSCContext in the UI process.** The host made one to parse and quote

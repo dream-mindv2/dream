@@ -10,7 +10,7 @@ add_executable(dream-browser
   ${vm}/value.cpp ${vm}/image.cpp ${vm}/heap.cpp ${vm}/gc_pool.cpp
   ${vm}/process.cpp ${vm}/interp.cpp ${vm}/builtins.cpp ${vm}/trunk.cpp
   ${vm}/pack.cpp ${vm}/debug.cpp ${vm}/digest.cpp ${vm}/regex.cpp
-  ${vm}/bigint.cpp ${vm}/scheduler.cpp ${vm}/runtime.cpp
+  ${vm}/bigint.cpp ${vm}/scheduler.cpp ${vm}/stack_thread.cpp ${vm}/runtime.cpp
   ${vm}/tensor.cpp ${vm}/tensor_kernels.cpp ${vm}/gpu.cpp
   ${vm}/jit_stub.cpp ${vm}/jit_rt.cpp ${vm}/crypto.cpp ${vm}/ed25519.cpp
   platform.cpp services.cpp host.cpp)

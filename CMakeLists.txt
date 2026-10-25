@@ -802,6 +802,7 @@ set(DREAM_SOURCES
   src/bigint.cpp
   src/os.cpp
   src/scheduler.cpp
+  src/stack_thread.cpp
   src/runtime.cpp
   src/capi.cpp
   src/tensor.cpp

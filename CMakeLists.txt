@@ -135,12 +135,15 @@ set(DREAM_LLVM_COMPONENTS core orcjit native support target analysis passes ipo
 
 # `--system-libs` is the link line LLVM *itself* was built with, so it names the
 # dependencies of the whole installation rather than of the components above.
-# Exactly one of them is dead weight here: libxml2 is for WindowsManifest, which
-# none of `DREAM_LLVM_COMPONENTS` links, and asking for it would make libxml2 a
-# build dependency of a VM that cannot reach the code that uses it. It is
-# excluded by name rather than by rule because it is the only such library --
-# every other entry below is one a component may genuinely need.
-set(DREAM_LLVM_SYSLIB_EXCLUDED xml2)
+# Two of them are dead weight here: libxml2 is for WindowsManifest, and z3
+# (Homebrew's LLVM names it) is the constraint solver Clang's static analyzer
+# calls; none of `DREAM_LLVM_COMPONENTS` reaches either, and asking for one
+# would make a VM need a library it cannot use -- a self-contained macOS VM
+# loaded /opt/homebrew's libz3. Linking archives, an object nothing refers to
+# is never pulled in, so were one needed after all the link would say so.
+# They are excluded by name rather than by rule; every other entry is one a
+# component may genuinely need.
+set(DREAM_LLVM_SYSLIB_EXCLUDED xml2 z3)
 
 # Split an llvm-config `--system-libs` string into a link-line list, and report
 # separately the names on it this machine cannot supply.
@@ -196,8 +199,13 @@ function(dream_llvm_syslibs raw out_libs out_missing)
       endif()
 
     else()
-      # An absolute path, or a flag llvm-config prints we pass straight on.
-      list(APPEND libs "${token}")
+      # An absolute path, or a flag llvm-config prints we pass straight on --
+      # but for a library excluded above, which may be given by its path.
+      get_filename_component(base "${token}" NAME_WE)
+      string(REGEX REPLACE "^lib" "" base "${base}")
+      if(NOT base IN_LIST DREAM_LLVM_SYSLIB_EXCLUDED)
+        list(APPEND libs "${token}")
+      endif()
     endif()
   endforeach()
 

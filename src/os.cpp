@@ -49,6 +49,8 @@ extern "C" int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t*,
 #include <sys/stat.h>
 #include <csignal>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 #include <unistd.h>
 #endif
 
@@ -56,6 +58,15 @@ extern "C" int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t*,
 #include "interp.hpp"
 #include "process.hpp"
 #include "scheduler.hpp"
+#include "io.hpp"
+
+// Windows has ConPTY rather than pseudo-terminals, and the browser VM no
+// processes at all: `pty_spawn!` and its kin say so there.
+#if defined(_WIN32) || defined(__EMSCRIPTEN__)
+#define DREAM_NO_PTY 1
+#else
+#define DREAM_NO_PTY 0
+#endif
 
 #ifndef _WIN32
 extern char** environ;
@@ -909,6 +920,322 @@ NativeResult os_install_dirs(Process& p, Value, Value*, uint32_t) {
     return NativeResult::ok(string_list(p, install_dirs()));
 }
 
+// ---------------------------------------------------------------------------
+// Pseudo-terminals
+//
+// `pty_spawn!` starts a program on a terminal of its own -- what a terminal
+// emulator, `script`, or an ssh server gives a shell -- and answers the
+// terminal's master side as an ordinary io handle, so `io.read!` and
+// `io.write!` park on it as they do on a socket. `std.pty` is the Dream side.
+//
+// It forks rather than using `posix_spawn`, which is what `exec!` uses,
+// because a program on a terminal needs the terminal to be its *controlling*
+// one -- the one Ctrl-C and a window's resize reach it through -- and only
+// BSD's `TIOCSCTTY`, run in the child, makes it so everywhere. The child
+// therefore runs between `fork` and `execve` in a copy of a multi-threaded
+// process, where only async-signal-safe calls are allowed: everything that
+// allocates -- the program found on PATH, the argument and environment arrays
+// -- is made before the fork, and the child only calls `setsid`, `open`,
+// `ioctl`, `dup2`, `chdir`, `sigaction`, `close` and `execve`. If the
+// `execve` fails, the reason goes back to the parent through a close-on-exec
+// pipe, whose closing without a word is how the parent knows it succeeded.
+//
+// Only the processes started here can be signalled or reaped through these
+// natives (`Ptys`): a pid is a number any program can write, and `kill`
+// would otherwise reach whatever this VM's user owns.
+// ---------------------------------------------------------------------------
+
+#if !DREAM_NO_PTY
+/// The children `pty_spawn!` started and nobody has reaped yet.
+class Ptys {
+public:
+    static Ptys& get() {
+        static Ptys p;
+        return p;
+    }
+    void add(pid_t pid) {
+        std::lock_guard<std::mutex> g(mutex_);
+        live_.push_back(pid);
+    }
+    bool has(pid_t pid) {
+        std::lock_guard<std::mutex> g(mutex_);
+        return std::find(live_.begin(), live_.end(), pid) != live_.end();
+    }
+    void remove(pid_t pid) {
+        std::lock_guard<std::mutex> g(mutex_);
+        live_.erase(std::remove(live_.begin(), live_.end(), pid), live_.end());
+    }
+
+private:
+    std::mutex mutex_;
+    std::vector<pid_t> live_;
+};
+
+/// `program` as `execvp` would find it on `path`, or `""`. A name with a
+/// slash in it is a path already.
+std::string find_program(const std::string& program, const std::string& path) {
+    if (program.find('/') != std::string::npos) return program;
+    size_t from = 0;
+    for (;;) {
+        size_t colon = path.find(':', from);
+        std::string dir = path.substr(from, colon == std::string::npos ? std::string::npos : colon - from);
+        if (dir.empty()) dir = ".";
+        std::string candidate = dir + "/" + program;
+        struct stat st{};
+        if (::stat(candidate.c_str(), &st) == 0 && S_ISREG(st.st_mode) && ::access(candidate.c_str(), X_OK) == 0)
+            return candidate;
+        if (colon == std::string::npos) return "";
+        from = colon + 1;
+    }
+}
+
+/// A window size the kernel will take: at least one cell each way, at most
+/// what fits its 16-bit fields.
+bool window_size(Value cols, Value rows, struct winsize* ws) {
+    Value c = resolve(cols), r = resolve(rows);
+    if (!is_fixnum(c) || !is_fixnum(r)) return false;
+    int64_t w = fixnum_value(c), h = fixnum_value(r);
+    if (w < 1 || h < 1 || w > 65535 || h > 65535) return false;
+    *ws = {};
+    ws->ws_col = uint16_t(w);
+    ws->ws_row = uint16_t(h);
+    return true;
+}
+#endif
+
+/// `pty_spawn! program args env dir cols rows` -- start `program` with `args`
+/// on a new terminal `cols` by `rows`, in `dir` (`""` for this VM's), with
+/// `env`'s `NAME=value`s laid over this VM's environment. Answers `[handle,
+/// pid]`: the terminal's master side, and the child.
+NativeResult os_pty_spawn(Process& p, Value, Value* args, uint32_t) {
+#if DREAM_NO_PTY
+    return fail(p, "unsupported", "pseudo-terminals are not provided on this platform yet");
+#else
+    if (!is_string(args[0])) return fail(p, "type_error", "pty_spawn! needs a program");
+    std::vector<std::string> argv{string_arg(args[0])};
+    std::vector<std::string> env;
+    if (!read_string_list(p, args[1], &argv) || !read_string_list(p, args[2], &env)) {
+        if (p.park_requested) return NativeResult::block();
+        return fail(p, "type_error", "pty_spawn! needs a list of arguments and a list of NAME=value strings");
+    }
+    for (const auto& kv : env) {
+        if (kv.find('=') == std::string::npos || kv.front() == '=' || kv.find('\0') != std::string::npos)
+            return fail(p, "bad_argument", "pty_spawn!: `" + kv + "` is not NAME=value");
+    }
+    for (const auto& a : argv) {
+        if (a.find('\0') != std::string::npos) return fail(p, "bad_argument", "pty_spawn!: an argument holds a NUL");
+    }
+    if (!is_string(args[3])) return fail(p, "type_error", "pty_spawn! needs a directory, or \"\"");
+    std::string dir = string_arg(args[3]);
+    struct winsize ws;
+    if (!window_size(args[4], args[5], &ws))
+        return fail(p, "bad_argument", "pty_spawn! needs a size of 1 to 65535 columns and rows");
+
+    // The environment the child gets, as `exec!` makes it: this VM's, without
+    // its debugging switches, with `env` laid over.
+    auto name_of = [](const std::string& kv) { return kv.substr(0, kv.find('=')); };
+    const bool inherit_debug = inherit_debug_variables();
+    std::vector<std::string> entries;
+    std::string path_var = std::getenv("PATH") ? std::getenv("PATH") : "/usr/local/bin:/usr/bin:/bin";
+    for (char** e = environ; *e; ++e) {
+        std::string entry(*e);
+        bool replaced = !inherit_debug && debug_variable(name_of(entry));
+        for (const std::string& kv : env) {
+            if (name_of(kv) == name_of(entry)) { replaced = true; break; }
+        }
+        if (!replaced) entries.push_back(entry);
+    }
+    for (const std::string& kv : env) {
+        entries.push_back(kv);
+        if (name_of(kv) == "PATH") path_var = kv.substr(5);
+    }
+    const std::string program = find_program(argv[0], path_var);
+    if (program.empty()) return fail(p, "not_found", "cannot run `" + argv[0] + "`: it is not on PATH");
+
+    int master = ::posix_openpt(O_RDWR | O_NOCTTY);
+    if (master < 0) return fail(p, "io_error", std::string("cannot open a terminal: ") + std::strerror(errno));
+    ::fcntl(master, F_SETFD, FD_CLOEXEC);
+    char slave_name[128];
+    if (::grantpt(master) != 0 || ::unlockpt(master) != 0 ||
+#if defined(__APPLE__)
+        [&] { const char* n = ::ptsname(master); if (!n) return 1; std::snprintf(slave_name, sizeof slave_name, "%s", n); return 0; }() != 0
+#else
+        ::ptsname_r(master, slave_name, sizeof slave_name) != 0
+#endif
+    ) {
+        int err = errno;
+        ::close(master);
+        return fail(p, "io_error", std::string("cannot prepare a terminal: ") + std::strerror(err));
+    }
+    ::ioctl(master, TIOCSWINSZ, &ws);
+    // Opened here as well as in the child, and held until the child has
+    // exec'd: a master whose other side nobody has open answers a read with
+    // EIO, which `read!` takes for the end of the session -- and a reader
+    // that got in before the child opened its side saw an empty session.
+    int slave = ::open(slave_name, O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (slave < 0) {
+        int err = errno;
+        ::close(master);
+        return fail(p, "io_error", std::string("cannot open the terminal's other side: ") + std::strerror(err));
+    }
+
+    std::vector<char*> cargv, cenv;
+    for (std::string& a : argv) cargv.push_back(a.data());
+    cargv.push_back(nullptr);
+    for (std::string& e : entries) cenv.push_back(e.data());
+    cenv.push_back(nullptr);
+
+    int report[2];
+#if defined(__APPLE__)
+    if (::pipe(report) == 0) { ::fcntl(report[0], F_SETFD, FD_CLOEXEC); ::fcntl(report[1], F_SETFD, FD_CLOEXEC); }
+    else { int err = errno; ::close(slave); ::close(master); return fail(p, "io_error", std::string("cannot create a pipe: ") + std::strerror(err)); }
+#else
+    if (::pipe2(report, O_CLOEXEC) != 0) {
+        int err = errno;
+        ::close(slave);
+        ::close(master);
+        return fail(p, "io_error", std::string("cannot create a pipe: ") + std::strerror(err));
+    }
+#endif
+
+    pid_t child = ::fork();
+    if (child == 0) {
+        // The child: async-signal-safe calls only, from here to `execve`.
+        struct sigaction dfl{};
+        dfl.sa_handler = SIG_DFL;
+        for (int sig = 1; sig < NSIG; ++sig) ::sigaction(sig, &dfl, nullptr);
+        sigset_t none;
+        sigemptyset(&none);
+        ::sigprocmask(SIG_SETMASK, &none, nullptr);
+        int step = 0;
+        auto die = [&](int what) {
+            int err[2] = {what, errno};
+            [[maybe_unused]] auto n = ::write(report[1], err, sizeof err);
+            ::_exit(127);
+        };
+        if (::setsid() < 0) die(step);
+        step = 1;
+#ifdef TIOCSCTTY
+        if (::ioctl(slave, TIOCSCTTY, 0) < 0) die(step);
+#endif
+        step = 2;
+        if (::dup2(slave, 0) < 0 || ::dup2(slave, 1) < 0 || ::dup2(slave, 2) < 0) die(step);
+        if (slave > 2) ::close(slave);
+        ::close(master);
+        step = 3;
+        if (!dir.empty() && ::chdir(dir.c_str()) != 0) die(step);
+        step = 4;
+        ::execve(program.c_str(), cargv.data(), cenv.data());
+        die(step);
+    }
+    int fork_err = errno;
+    ::close(report[1]);
+    if (child < 0) {
+        ::close(slave);
+        ::close(report[0]);
+        ::close(master);
+        return fail(p, "io_error", std::string("cannot start a process: ") + std::strerror(fork_err));
+    }
+    int err[2] = {0, 0};
+    ssize_t got;
+    do got = ::read(report[0], err, sizeof err); while (got < 0 && errno == EINTR);
+    ::close(report[0]);
+    ::close(slave);
+    if (got == sizeof err) {
+        ::waitpid(child, nullptr, 0);
+        ::close(master);
+        static const char* const steps[] = {"start a session", "take its terminal", "attach its terminal",
+                                            "enter its directory", "run it"};
+        const std::string doing = err[0] == 3 ? "enter " + dir : steps[err[0] < 0 || err[0] > 4 ? 4 : err[0]];
+        return NativeResult::raise(os_error(p, err[1] == ENOENT ? "not_found" : err[1] == EACCES ? "permission_denied" : "io_error",
+            "cannot run `" + argv[0] + "`: cannot " + doing + ": " + std::strerror(err[1])));
+    }
+    Ptys::get().add(child);
+    Value handle = make_fixnum(io_adopt_stream(master));
+    return NativeResult::ok(p.heap().make_cons(handle, p.heap().make_cons(make_fixnum(child), NIL)));
+#endif
+}
+
+/// `pty_resize! handle cols rows` -- tell the terminal, and so the program in
+/// its foreground (by SIGWINCH), that the window is a new size.
+NativeResult os_pty_resize(Process& p, Value, Value* args, uint32_t) {
+#if DREAM_NO_PTY
+    return fail(p, "unsupported", "pseudo-terminals are not provided on this platform yet");
+#else
+    struct winsize ws;
+    if (!window_size(args[1], args[2], &ws))
+        return fail(p, "bad_argument", "pty_resize! needs a size of 1 to 65535 columns and rows");
+    int rc = 0, err = 0;
+    if (!io_with_fd(args[0], [&](int fd) { rc = ::ioctl(fd, TIOCSWINSZ, &ws); err = errno; }))
+        return fail(p, "io_closed", "this terminal is closed");
+    if (rc != 0) return fail(p, "io_error", std::string("cannot resize the terminal: ") + std::strerror(err));
+    return NativeResult::ok(UNIT);
+#endif
+}
+
+/// `pty_status! pid` -- `()` while the child runs; its exit status once it
+/// has ended, or `-n` when signal `n` ended it. The child is reaped then, and
+/// its pid no longer names anything here.
+NativeResult os_pty_status(Process& p, Value, Value* args, uint32_t) {
+#if DREAM_NO_PTY
+    return fail(p, "unsupported", "pseudo-terminals are not provided on this platform yet");
+#else
+    Value v = resolve(args[0]);
+    if (!is_fixnum(v)) return fail(p, "type_error", "pty_status! needs a pid");
+    pid_t pid = pid_t(fixnum_value(v));
+    if (!Ptys::get().has(pid)) return fail(p, "not_found", "no terminal's program has this pid");
+    int status = 0;
+    pid_t got;
+    do got = ::waitpid(pid, &status, WNOHANG); while (got < 0 && errno == EINTR);
+    if (got == 0) return NativeResult::ok(UNIT);
+    Ptys::get().remove(pid);
+    if (got < 0) return NativeResult::ok(make_fixnum(-1));
+    if (WIFSIGNALED(status)) return NativeResult::ok(make_fixnum(-int64_t(WTERMSIG(status))));
+    return NativeResult::ok(make_fixnum(WEXITSTATUS(status)));
+#endif
+}
+
+/// `pty_signal! pid name` -- send `:hangup`, `:interrupt`, `:terminate`,
+/// `:kill`, `:quit`, `:stop` or `:continue` to a child `pty_spawn!` started.
+NativeResult os_pty_signal(Process& p, Value, Value* args, uint32_t) {
+#if DREAM_NO_PTY
+    return fail(p, "unsupported", "pseudo-terminals are not provided on this platform yet");
+#else
+    Value v = resolve(args[0]), s = resolve(args[1]);
+    if (!is_fixnum(v) || !is_atom(s)) return fail(p, "type_error", "pty_signal! needs a pid and a signal's name");
+    pid_t pid = pid_t(fixnum_value(v));
+    if (!Ptys::get().has(pid)) return fail(p, "not_found", "no terminal's program has this pid");
+    const std::string name = p.runtime().atom_name(uint32_t(imm_payload(s)));
+    static const std::pair<const char*, int> signals[] = {
+        {"hangup", SIGHUP}, {"interrupt", SIGINT}, {"terminate", SIGTERM}, {"kill", SIGKILL},
+        {"quit", SIGQUIT}, {"stop", SIGSTOP}, {"continue", SIGCONT},
+    };
+    for (auto [n, sig] : signals) {
+        if (name == n) {
+            // The whole session's process group: the shell's children too,
+            // as closing a terminal's window does.
+            if (::kill(-pid, sig) != 0 && ::kill(pid, sig) != 0 && errno != ESRCH)
+                return fail(p, "permission_denied", std::string("cannot signal it: ") + std::strerror(errno));
+            return NativeResult::ok(UNIT);
+        }
+    }
+    return fail(p, "bad_argument", "`:" + name + "` is not a signal pty_signal! sends");
+#endif
+}
+
+/// `pty_foreground! handle` -- the process group in the terminal's foreground
+/// (the shell at a prompt, the program it is running otherwise), or `()`.
+NativeResult os_pty_foreground(Process& p, Value, Value* args, uint32_t) {
+#if DREAM_NO_PTY
+    return fail(p, "unsupported", "pseudo-terminals are not provided on this platform yet");
+#else
+    pid_t group = -1;
+    if (!io_with_fd(args[0], [&](int fd) { group = ::tcgetpgrp(fd); }))
+        return fail(p, "io_closed", "this terminal is closed");
+    return NativeResult::ok(group > 0 ? make_fixnum(group) : UNIT);
+#endif
+}
+
 }  // namespace
 
 void os_shutdown() { Jobs::get().drain(); }
@@ -1066,6 +1393,11 @@ ModuleDef make_os_module() {
                          {"install_dirs!", 1, 0b1, os_install_dirs},
                          {"arch", 1, 0b1, os_arch},
                          {"exit!", 1, 0b1, os_exit},
+                         {"pty_spawn!", 6, 0b111001, os_pty_spawn},
+                         {"pty_resize!", 3, 0b111, os_pty_resize},
+                         {"pty_status!", 1, 0b1, os_pty_status},
+                         {"pty_signal!", 2, 0b11, os_pty_signal},
+                         {"pty_foreground!", 1, 0b1, os_pty_foreground},
                      }};
 }
 

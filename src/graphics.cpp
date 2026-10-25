@@ -19,6 +19,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace dream {
 namespace {
@@ -153,12 +154,18 @@ struct Host {
         if (!reason.empty()) std::fprintf(stderr, "dream graphics: %s\n", reason.c_str());
         if (gtk_main_level()) gtk_main_quit();
     }
-    void deliver(const std::string& text) {
-        // Quote the entire JSON frame as one string argument. Never interpolate
-        // application text as executable JavaScript, even after validation. A
-        // frame that is not JSON fails in `JSON.parse`, which stops the
-        // application below, as an invalid frame should.
-        const std::string script = "window.__dreamReceive(JSON.parse(" + quote(text) + "));";
+    void deliver(const std::string& text) { deliver(std::vector<std::string>{text}); }
+    void deliver(const std::vector<std::string>& frames) {
+        // Quote each entire JSON frame as one string argument. Never
+        // interpolate application text as executable JavaScript, even after
+        // validation. A frame that is not JSON fails in `JSON.parse`, which
+        // stops the application below, as an invalid frame should.
+        //
+        // Every frame that has arrived goes in one evaluation: a backend
+        // streaming events -- a terminal's output -- sends many a tick, and
+        // one round trip into the page each held them to a hundred a second.
+        std::string script;
+        for (const auto& text : frames) script += "window.__dreamReceive(JSON.parse(" + quote(text) + "));";
         script_pending = true;
         webkit_web_view_evaluate_javascript(view, script.c_str(), script.size(), nullptr, nullptr,
             cancel.get(), [](GObject* object, GAsyncResult* result, gpointer data) {
@@ -201,27 +208,36 @@ struct Host {
         // thread or unbounded main-loop queue is needed for the child pipes.
         if (done || script_pending) return;
         auto* input = G_POLLABLE_INPUT_STREAM(g_subprocess_get_stdout_pipe(backend.get()));
-        for (size_t budget = 0; budget < 65536; budget += 4096) {
-            const auto newline = incoming.find('\n');
-            if (newline != std::string::npos) {
-                const std::string frame = incoming.substr(0, newline);
+        // Up to 4 MiB of frames a tick, delivered together.
+        std::vector<std::string> frames;
+        size_t taken = 0;
+        auto send = [&] { if (!frames.empty() && !done) deliver(frames); };
+        for (size_t budget = 0; budget < 4 * max_message; budget += 65536) {
+            for (auto newline = incoming.find('\n'); newline != std::string::npos; newline = incoming.find('\n')) {
+                std::string frame = incoming.substr(0, newline);
                 incoming.erase(0, newline + 1);
-                if (frame.size() > max_message || frame.find('\0') != std::string::npos) stop(1, "invalid backend response");
-                else deliver(frame);
-                return;
+                if (frame.size() > max_message || frame.find('\0') != std::string::npos) {
+                    stop(1, "invalid backend response");
+                    return;
+                }
+                taken += frame.size();
+                frames.push_back(std::move(frame));
             }
             if (incoming.size() > max_message) { stop(1, "backend frame exceeds limit"); return; }
-            char bytes[4096];
+            if (taken >= 4 * max_message) break;
+            char bytes[65536];
             GError* error = nullptr;
             const gssize n = g_pollable_input_stream_read_nonblocking(input, bytes, sizeof bytes, nullptr, &error);
             if (n > 0) incoming.append(bytes, size_t(n));
             else {
-                if (!error || !g_error_matches(error, G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK))
-                    stop(1, "backend stopped or sent an incomplete frame");
+                const bool would_block = error && g_error_matches(error, G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK);
                 g_clear_error(&error);
+                send();
+                if (!would_block) stop(1, "backend stopped or sent an incomplete frame");
                 return;
             }
         }
+        send();
     }
     void message(JSCValue* value) {
         // Any page of the application's own -- a route it pushed is still it.

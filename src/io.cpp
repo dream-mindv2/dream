@@ -10,6 +10,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -859,6 +860,12 @@ NativeResult io_read(Process& p, Value, Value* args, uint32_t) {
         if ((errno == EAGAIN || errno == EWOULDBLOCK) && h.pollable()) {
             return wait_for(p, h.fd(), false);
         }
+        // A terminal says EIO where a pipe says end of file: Linux answers a
+        // read of a pseudo-terminal's master with it once the last holder of
+        // the other side -- the shell `pty_spawn!` started, and whatever it
+        // left running -- has gone. That is the end of the session, and a
+        // read loop should see it as it sees the end of any stream.
+        if (errno == EIO && sys::is_terminal(h.fd())) return NativeResult::ok(p.heap().make_string("", 0));
         return fail_errno(p, "read", errno);
     }
 }
@@ -1888,6 +1895,18 @@ void io_shutdown() {
 }
 
 bool io_async_available() { return Poller::get().available(); }
+
+int64_t io_adopt_stream(int fd) {
+    set_nonblocking(fd);
+    return HandleTable::get().add(fd, HandleKind::Stream);
+}
+
+bool io_with_fd(Value handle, const std::function<void(int)>& f) {
+    Held h;
+    if (!h.open(handle)) return false;
+    f(h.fd());
+    return true;
+}
 
 std::vector<IoHandleInfo> io_snapshot() {
     // The waiter is asked for outside the table lock: the two are separate

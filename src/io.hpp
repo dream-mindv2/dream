@@ -21,6 +21,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -65,6 +66,15 @@ std::vector<IoHandleInfo> io_snapshot();
 /// Withdraw process `pid` from waiting on `fd`: it is being killed, and a
 /// waiter left behind would be counted as owed a wake-up for ever.
 void io_cancel_wait(int fd, uint64_t pid);
+
+/// Take `fd` -- a stream this VM made, such as a pseudo-terminal's master --
+/// into the handle table, non-blocking, and answer the handle a Dream program
+/// reads and writes it by.
+int64_t io_adopt_stream(int fd);
+
+/// Run `f` on the descriptor behind `handle`, held open meanwhile. False when
+/// the handle is closed or was never issued.
+bool io_with_fd(Value handle, const std::function<void(int)>& f);
 
 ModuleDef make_io_module();
 ModuleDef make_net_module();

@@ -27,12 +27,13 @@
 
 using namespace dream;
 
-// Which VM this is: a release number, and the commit it was built from when
-// the build knew it (CMake asks git at configure time). A reproduced build
-// names the VM it ran on, since the compiler's output is the compiler's and
-// the VM's together.
+// Which VM this is: the release it came in (`-DDREAM_VERSION`, which the
+// toolchain passes; `dev` from a checkout), and the commit it was built from
+// when the build knew it (CMake asks git at configure time). A reproduced
+// build names the VM it ran on, since the compiler's output is the
+// compiler's and the VM's together.
 #ifndef DREAM_VERSION
-#define DREAM_VERSION "0.1.0"
+#define DREAM_VERSION "dev"
 #endif
 #ifndef DREAM_COMMIT
 #define DREAM_COMMIT "unknown"

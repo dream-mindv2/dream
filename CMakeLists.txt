@@ -1206,6 +1206,12 @@ if(DREAM_GIT_COMMIT)
   target_compile_definitions(dream_cli PRIVATE DREAM_COMMIT="${DREAM_GIT_COMMIT}")
 endif()
 
+# And the release it is part of: a toolchain passes its own version, so a VM
+# says which one it came in. A build from a checkout is `dev`, which with the
+# commit beside it is all there is to say.
+set(DREAM_VERSION "dev" CACHE STRING "The version dream --version names; a release passes its own")
+target_compile_definitions(dream_cli PRIVATE DREAM_VERSION="${DREAM_VERSION}")
+
 target_link_libraries(
   dream_cli
   PRIVATE

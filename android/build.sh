@@ -51,6 +51,7 @@ cmake -S "$root" -B "$out/vm" \
     -DANDROID_ABI="$abi" -DANDROID_PLATFORM="android-$api" \
     -DANDROID_STL=c++_shared -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
     -DCMAKE_BUILD_TYPE=Release -DDREAM_ENABLE_JIT=OFF -DDREAM_LINK_DEPS=STATIC \
+    -DDREAM_VERSION="${DREAM_VERSION:-dev}" \
     -DDREAM_FFI_INCLUDE="$prefix/include" -DDREAM_FFI_LIB="$prefix/lib/libffi.a" \
     -DOPENSSL_INCLUDE_DIR="$prefix/include" \
     -DOPENSSL_SSL_LIBRARY="$prefix/lib/libssl.a" \

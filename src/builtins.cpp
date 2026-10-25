@@ -1817,6 +1817,8 @@ NativeResult vm_image_function(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_locate_image(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_image_digest(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_wire_encode(Process& p, Value self, Value* args, uint32_t n);
+NativeResult vm_json_encode(Process& p, Value self, Value* args, uint32_t n);
+NativeResult vm_json_decode(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_share_arenas(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_node_section(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_index_section(Process& p, Value self, Value* args, uint32_t n);
@@ -1866,6 +1868,10 @@ ModuleDef make_vm_module() {
                          {"wire_encode", 1, 0b0, vm_wire_encode, 0, true},
                          {"wire_decode", 1, 0b1, vm_wire_decode},
                          {"wire_pack", 1, 0b0, vm_wire_pack, 0, true},
+                         // `std.json`'s `encode`, done here: the walk every frame
+                         // of a graphical application and every JSON body takes.
+                         {"json_encode", 1, 0b0, vm_json_encode, 0, true},
+                         {"json_decode", 1, 0b1, vm_json_decode},
                          // `opt.optimize_parts`'s walk; see "Sharing a program's parts".
                          {"share_arenas", 1, 0b0, vm_share_arenas, 0, true},
                          // `emit`'s node and kid sections; see "The image's two largest sections".
@@ -4870,6 +4876,359 @@ NativeResult vm_wire_encode(Process& p, Value, Value* args, uint32_t) {
     }
     if (out.size() > UINT32_MAX) return type_fail(p, "wire_encode: the message is larger than a string can be");
     return NativeResult::ok(p.heap().make_string(out.data(), uint32_t(out.size())));
+}
+
+/// `s` as a JSON string: quoted, with the quote, the backslash and the
+/// control characters escaped as `std.json`'s `escape_byte` spells them, and
+/// everything else -- non-ASCII included -- as itself.
+void json_quote(std::string* out, const char* s, size_t n) {
+    static const char hex[] = "0123456789abcdef";
+    out->push_back('"');
+    size_t run = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c >= 32 && c != '"' && c != '\\') continue;
+        out->append(s + run, i - run);
+        run = i + 1;
+        switch (c) {
+            case '"': out->append("\\\""); break;
+            case '\\': out->append("\\\\"); break;
+            case '\n': out->append("\\n"); break;
+            case '\t': out->append("\\t"); break;
+            case '\r': out->append("\\r"); break;
+            case '\b': out->append("\\b"); break;
+            case '\f': out->append("\\f"); break;
+            default: {
+                const char e[] = {'\\', 'u', '0', '0', hex[c >> 4], hex[c & 15]};
+                out->append(e, sizeof e);
+            }
+        }
+    }
+    out->append(s + run, n - run);
+    out->push_back('"');
+}
+
+/// The text of a JSON object's key: an atom's name, a string as itself, and
+/// anything else as `to_string` writes it -- `std.json`'s `key_text`.
+bool json_key(Process& p, Value k, std::string* out) {
+    k = resolve(k);
+    if (is_atom(k)) {
+        const std::string& name = p.runtime().atom_name(uint32_t(imm_payload(k)));
+        json_quote(out, name.data(), name.size());
+        return true;
+    }
+    if (is_obj(k, ObjType::Str)) {
+        auto* s = static_cast<StrObj*>(as_obj(k));
+        json_quote(out, s->data(), s->len);
+        return true;
+    }
+    std::string text;
+    if (!stringify(p, k, &text)) return false;
+    json_quote(out, text.data(), text.size());
+    return true;
+}
+
+/// A value already forced all the way down, as `std.json`'s `encode` writes
+/// it through `std.codec`'s walk: a list, an array and a trunk as an array, a
+/// map as an object with its members in key order, a record as its fields
+/// (a variant's as its name and then its fields), and anything that is not
+/// data as the string of its text. False where a map's keys cannot be
+/// compared or the value nests too deep.
+bool json_write(Process& p, Value v, std::string* out, int depth) {
+    v = resolve(v);
+    if (depth > 10000) return false;
+    if (is_unit(v)) { out->append("null"); return true; }
+    if (is_bool(v)) { out->append(v == TRUE_V ? "true" : "false"); return true; }
+    if (is_fixnum(v)) { out->append(std::to_string(fixnum_value(v))); return true; }
+    if (v == NIL) { out->append("[]"); return true; }
+    if (is_atom(v)) {
+        const std::string& name = p.runtime().atom_name(uint32_t(imm_payload(v)));
+        json_quote(out, name.data(), name.size());
+        return true;
+    }
+    auto items = [&](uint32_t n, auto at) {
+        out->push_back('[');
+        for (uint32_t i = 0; i < n; ++i) {
+            if (i) out->push_back(',');
+            if (!json_write(p, at(i), out, depth + 1)) return false;
+        }
+        out->push_back(']');
+        return true;
+    };
+    if (is_ptr(v)) {
+        switch (as_obj(v)->type) {
+            case ObjType::Str: {
+                auto* s = static_cast<StrObj*>(as_obj(v));
+                json_quote(out, s->data(), s->len);
+                return true;
+            }
+            case ObjType::BigStr: {
+                auto* b = static_cast<BigStrObj*>(as_obj(v));
+                json_quote(out, b->data, b->len);
+                return true;
+            }
+            case ObjType::Cons: {
+                out->push_back('[');
+                bool first = true;
+                for (Value cur = v; is_obj(cur, ObjType::Cons);
+                     cur = resolve(static_cast<ConsObj*>(as_obj(cur))->tail)) {
+                    if (!first) out->push_back(',');
+                    first = false;
+                    if (!json_write(p, static_cast<ConsObj*>(as_obj(cur))->head, out, depth + 1)) return false;
+                }
+                out->push_back(']');
+                return true;
+            }
+            case ObjType::Array:
+                return items(static_cast<ArrayObj*>(as_obj(v))->len,
+                             [&](uint32_t i) { return static_cast<ArrayObj*>(as_obj(v))->items()[i]; });
+            case ObjType::Trunk:
+                return items(trunk_length(v), [&](uint32_t i) { return trunk_element(v, i); });
+            case ObjType::Record: {
+                auto* r = static_cast<RecordObj*>(as_obj(v));
+                if (!r->variant()) return items(r->len, [&](uint32_t i) { return static_cast<RecordObj*>(as_obj(v))->items()[i]; });
+                // A variant is its name -- the id's last part -- and then its
+                // fields, or its name alone when it has none.
+                const std::string& id = p.runtime().atom_name(uint32_t(imm_payload(r->id())));
+                const size_t dot = id.rfind('.');
+                const std::string tag = dot == std::string::npos ? id : id.substr(dot + 1);
+                if (r->len == 0) { json_quote(out, tag.data(), tag.size()); return true; }
+                out->push_back('[');
+                json_quote(out, tag.data(), tag.size());
+                for (uint32_t i = 0; i < r->len; ++i) {
+                    out->push_back(',');
+                    if (!json_write(p, static_cast<RecordObj*>(as_obj(v))->items()[i], out, depth + 1)) return false;
+                }
+                out->push_back(']');
+                return true;
+            }
+            case ObjType::Map: {
+                std::vector<std::pair<Value, Value>> entries;
+                map_collect(v, entries);
+                bool ok = true;
+                std::stable_sort(entries.begin(), entries.end(), [&](const auto& x, const auto& y) {
+                    int cmp = 0;
+                    if (!compare_values(p, x.first, y.first, 0, &cmp)) ok = false;
+                    return cmp < 0;
+                });
+                if (!ok) return false;
+                out->push_back('{');
+                for (size_t i = 0; i < entries.size(); ++i) {
+                    if (i) out->push_back(',');
+                    if (!json_key(p, entries[i].first, out)) return false;
+                    out->push_back(':');
+                    if (!json_write(p, entries[i].second, out, depth + 1)) return false;
+                }
+                out->push_back('}');
+                return true;
+            }
+            default: break;
+        }
+    }
+    // A number is its digits as `to_string` writes them; a char, a tensor,
+    // a function -- anything else -- is a string of that text.
+    std::string text;
+    if (!stringify(p, v, &text)) return false;
+    if (bigint::is_big(v) || is_obj(v, ObjType::Float)) out->append(text);
+    else json_quote(out, text.data(), text.size());
+    return true;
+}
+
+NativeResult vm_json_encode(Process& p, Value, Value* args, uint32_t) {
+    Value forced;
+    {
+        VouchesForGc vouch(p);
+        if (!force_deep(p, args[0], &forced)) return NativeResult::raise(p.result);
+    }
+    std::string out;
+    if (!json_write(p, forced, &out, 0)) {
+        return type_fail(p, "json_encode: a map's keys could not be compared, or the value nests too deep");
+    }
+    if (out.size() > UINT32_MAX) return type_fail(p, "json_encode: the text is larger than a string can be");
+    return NativeResult::ok(p.heap().make_string(out.data(), uint32_t(out.size())));
+}
+
+/// JSON text read as `std.json`'s `parse` reads it, natively: objects are
+/// maps from strings, arrays lists, numbers what `_parse_int` or
+/// `_parse_float` makes of their text, a `\u` escape a character, a UTF-16
+/// surrogate pair one, and half of a pair U+FFFD. It answers only what it is
+/// sure of: text that is not valid UTF-8 or not valid JSON, or that nests too
+/// deep, it leaves to the Dream parser, whose answer -- and whose error -- is
+/// then the answer, exactly as before.
+struct JsonReader {
+    Process& p;
+    const char* s;
+    uint32_t n;
+    uint32_t i = 0;
+
+    void ws() { while (i < n && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) ++i; }
+    bool starts(const char* word) {
+        const size_t k = std::strlen(word);
+        if (n - i < k || std::memcmp(s + i, word, k) != 0) return false;
+        i += uint32_t(k);
+        return true;
+    }
+    static int hex(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    }
+    /// Four hex digits at `at`, or -1.
+    int hex4(uint32_t at) const {
+        if (n - at < 4) return -1;
+        int v = 0;
+        for (uint32_t k = 0; k < 4; ++k) {
+            const int d = hex(s[at + k]);
+            if (d < 0) return -1;
+            v = v * 16 + d;
+        }
+        return v;
+    }
+    /// A string's body, after its opening quote.
+    bool string(std::string* out) {
+        for (;;) {
+            const uint32_t run = i;
+            while (i < n && s[i] != '"' && s[i] != '\\') ++i;
+            out->append(s + run, i - run);
+            if (i >= n) return false;
+            if (s[i++] == '"') return true;
+            if (i >= n) return false;
+            const char e = s[i++];
+            switch (e) {
+                case 'n': out->push_back('\n'); break;
+                case 't': out->push_back('\t'); break;
+                case 'r': out->push_back('\r'); break;
+                case 'b': out->push_back('\b'); break;
+                case 'f': out->push_back('\f'); break;
+                case '"': out->push_back('"'); break;
+                case '\\': out->push_back('\\'); break;
+                case '/': out->push_back('/'); break;
+                case 'u': {
+                    const int code = hex4(i);
+                    if (code < 0) return false;
+                    i += 4;
+                    uint32_t cp = uint32_t(code);
+                    if (cp >= 0xD800 && cp <= 0xDFFF) {
+                        // A high half followed by an escaped low half is one
+                        // character; anything else leaves this half U+FFFD
+                        // and the next escape to be read on its own.
+                        const int low = cp <= 0xDBFF && n - i >= 2 && s[i] == '\\' && s[i + 1] == 'u' ? hex4(i + 2) : -1;
+                        if (low >= 0xDC00 && low <= 0xDFFF) {
+                            cp = 0x10000 + (cp - 0xD800) * 1024 + (uint32_t(low) - 0xDC00);
+                            i += 6;
+                        } else cp = 0xFFFD;
+                    }
+                    utf8_encode(cp, out);
+                    break;
+                }
+                default: return false;
+            }
+        }
+    }
+    bool value(Value* out, int depth) {
+        if (depth > 10000) return false;
+        ws();
+        if (i >= n) return false;
+        const char c = s[i];
+        if (c == '"') {
+            ++i;
+            std::string text;
+            if (!string(&text)) return false;
+            *out = p.heap().make_string(text.data(), uint32_t(text.size()));
+            return true;
+        }
+        if (c == '{') {
+            ++i;
+            Value m = p.heap().make_map(0);
+            for (bool first = true;; first = false) {
+                ws();
+                if (i < n && s[i] == '}') { ++i; *out = m; return true; }
+                if (!first) {
+                    if (i >= n || s[i] != ',') return false;
+                    ++i;
+                    ws();
+                }
+                if (i >= n || s[i] != '"') return false;
+                ++i;
+                std::string key;
+                if (!string(&key)) return false;
+                ws();
+                if (i >= n || s[i] != ':') return false;
+                ++i;
+                Value v;
+                if (!value(&v, depth + 1)) return false;
+                Value k = p.heap().make_string(key.data(), uint32_t(key.size()));
+                m = resolve(map_insert(p, m, k, v));
+            }
+        }
+        if (c == '[') {
+            ++i;
+            std::vector<Value> items;
+            for (bool first = true;; first = false) {
+                ws();
+                if (i < n && s[i] == ']') {
+                    ++i;
+                    Value list = NIL;
+                    for (size_t k = items.size(); k-- > 0;) list = p.heap().make_cons(items[k], list);
+                    *out = list;
+                    return true;
+                }
+                if (!first) {
+                    if (i >= n || s[i] != ',') return false;
+                    ++i;
+                }
+                Value v;
+                if (!value(&v, depth + 1)) return false;
+                items.push_back(v);
+            }
+        }
+        if (starts("true")) { *out = make_bool(true); return true; }
+        if (starts("false")) { *out = make_bool(false); return true; }
+        if (starts("null")) { *out = UNIT; return true; }
+        if ((c >= '0' && c <= '9') || c == '-') {
+            const uint32_t from = i;
+            bool floaty = false;
+            while (i < n) {
+                const char d = s[i];
+                if ((d >= '0' && d <= '9') || d == '-' || d == '+') ++i;
+                else if (d == '.' || d == 'e' || d == 'E') { floaty = true; ++i; }
+                else break;
+            }
+            if (floaty) {
+                std::string text(s + from, i - from);
+                size_t used = 0;
+                double v = 0;
+                try { v = std::stod(text, &used); } catch (...) { return false; }
+                if (used != text.size()) return false;
+                *out = p.heap().make_float(v);
+                return true;
+            }
+            return bigint::parse(p.heap(), s + from, i - from, out);
+        }
+        return false;
+    }
+};
+
+NativeResult vm_json_decode(Process& p, Value, Value* args, uint32_t) {
+    Bytes b;
+    if (!string_bytes(args[0], &b)) return type_fail(p, "json_decode needs a string");
+    if (b.len > UINT32_MAX) return NativeResult::ok(UNIT);
+    const uint32_t n = uint32_t(b.len);
+    // Text `str.chars` would read differently from its bytes -- a byte that
+    // is not UTF-8 becomes U+FFFD there -- is the Dream parser's to read.
+    for (uint32_t at = 0; at < n;) {
+        const uint32_t was = at;
+        if (utf8_next(b.data, n, &at) == 0xFFFD && !(at - was == 3 && std::memcmp(b.data + was, "\xEF\xBF\xBD", 3) == 0)) {
+            return NativeResult::ok(UNIT);
+        }
+    }
+    JsonReader r{p, b.data, n};
+    Value v = UNIT;
+    if (!r.value(&v, 0)) return NativeResult::ok(UNIT);
+    r.ws();
+    if (r.i != n) return NativeResult::ok(UNIT);
+    return NativeResult::ok(p.heap().make_cons(v, NIL));
 }
 
 struct WireReader {

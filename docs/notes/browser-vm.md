@@ -177,3 +177,38 @@ worker kept only a slice's last render, the page only a frame's -- since each
 is of what the one before made: both now queue them in order. And identity
 is decided among siblings, so a keyed node moved to another parent is a new
 element there; the page used to match keys across the whole tree.
+
+## A stream of output
+
+sleep's terminal was the first program to send its window a lot, fast:
+`seq 1 200000` is 200,000 lines in half a second. Measured in the window
+(Xvfb, 2026-10-24), the window had drawn 111,000 of them after 25 s, while
+the backend had finished the whole flood in 0.8 s. Four things were in the
+way, and only one of them was the emulator.
+
+- **The frame was the history, not the screen.** Each frame carried every
+  line changed within the 2,000 the window keeps, so a flood sent 2,000 lines
+  a frame and the page drew each, though only the screen's 40 could be seen.
+  A frame sent while output still arrives now carries the screen; the first
+  after it stops carries everything kept ("While output streams, a frame is
+  the screen" in sleep/src/session.dr). The tab draws from where its
+  unbroken run of lines begins, or it drew 1,460 empty lines, numbered
+  afresh each frame.
+- **JSON was Dream.** `json.encode` walked `std.codec` and `json.parse` a
+  list of characters; on the browser VM, with no JIT, decoding a frame cost
+  more than drawing it. Both are the VM's now (`vm.json_encode`,
+  `vm.json_decode` in dream/src/builtins.cpp), written to give the bytes and
+  values the Dream walk gives -- `std.json`'s tests hold the two together --
+  and the reader leaves anything it is not sure of (text that is not JSON,
+  not UTF-8, or nests too deep) to the Dream parser, so errors read as
+  before. 532 ms of decoding the coloured flood natively became 7.
+- **A long keyed list re-diffed every frame.** The terminal widget's lines
+  were siblings, 1,500 of them; a render compared and re-keyed them all.
+  They are drawn in lazy blocks of 64 now, keyed by place, so a frame
+  compares a couple of dozen.
+- **`str.join_str` built a list of two per part** through `flat_map`, which
+  every JSON array and rendered page paid; it conses now.
+
+After: the flood is 0.54 s in the window, as fast as `seq` writes to a
+terminal, and a coloured one (100,000 lines, four SGRs each) 1.6 s where it
+was 10.

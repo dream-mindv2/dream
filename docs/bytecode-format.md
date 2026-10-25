@@ -426,7 +426,8 @@ nothing can name, is an image that was built wrong.
 **`LNAM`** names the data, in `LDAT`'s order: for each, a `u32 length` and
 that many bytes, consecutive and unpadded, with `count` the number of names.
 `dreams --payload NAME=FILE` writes it (a bare `FILE` is named for its last
-path component), and it is what lets a program ask for a datum by what it is
+path component; a name may hold `/`, so a graphics application carries each
+file of its page as `graphics/` and the file's path), and it is what lets a program ask for a datum by what it is
 -- `std.foreign`'s `[:payload, "sqlite"]` -- rather than by where it fell on
 the command line. It is optional and additive like the other two: an image
 without it is reached by index, and a reader that does not know it skips it.

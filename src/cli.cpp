@@ -51,7 +51,8 @@ const char* USAGE =
     "\n"
     "options:\n"
     "      --version        print which VM this is and exit\n"
-    "      --graphics DIR   run a graphics application directory (optional build)\n"
+    "      --graphics APP   run a graphics application directory or image (optional build)\n"
+    "      --headless       run an application image's program without its window\n"
     "  -x, --exec <name>    run <name>.dream from the installation, not from here\n"
     "  -e, --entry <name>   run this global instead of `main!`\n"
     "  -j, --workers <n>    scheduler threads (default: one per usable core)\n"
@@ -395,7 +396,7 @@ int dream_main(int argc, char** argv) {
     std::string path, entry;
     std::string dump_jit_fn;
     unsigned workers = 0;
-    bool dump = false, stats = false, use_jit = true, any_target = false;
+    bool dump = false, stats = false, use_jit = true, any_target = false, headless = false;
     size_t profile_top = 0;
     uint32_t jit_threshold = 0;
     unsigned jit_threads = 0;
@@ -458,6 +459,8 @@ int dream_main(int argc, char** argv) {
             if (i + 1 < argc && argv[i + 1][0] != '-' && std::isdigit(argv[i + 1][0])) {
                 profile_top = size_t(std::stoul(argv[++i]));
             }
+        } else if (a == "--headless") {
+            headless = true;
         } else if (a == "--no-jit") {
             use_jit = false;
         } else if (a == "--debug") {
@@ -553,7 +556,7 @@ int dream_main(int argc, char** argv) {
     // The runtime reports the run's cost, not this function: a program that
     // ends with `os.exit!` never comes back here, and every tool does.
     if (stats) rt.enable_stats();
-    rt.set_program_args(std::move(program_args));
+    rt.set_program_args(program_args);
     std::string error;
     if (!rt.load_image_file(path, error)) {
         std::fprintf(stderr, "dream: %s\n", error.c_str());
@@ -594,6 +597,13 @@ int dream_main(int argc, char** argv) {
         dump_image(rt.image());
         return 0;
     }
+
+    // An image carrying a page is an application: running it opens the
+    // window, whose host runs this image again `--headless` as the backend.
+    // So `dream -x sleep` is how an installed application is started, as any
+    // installed program is.
+    if (!headless && rt.image().data_index(graphics_page_payload) >= 0)
+        return run_graphics_image(rt.image(), path, program_args);
 
     // Constructing a Jit registers it with the runtime, so `--no-jit` simply
     // never builds one and every call stays in the interpreter.

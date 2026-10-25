@@ -7,6 +7,7 @@
 // JSCContext for that, and on WebKitGTK 2.54 a context made in the UI process
 // before the view stops the view's first load from ever starting.
 #include "graphics.hpp"
+#include "image.hpp"
 #include <webkit2/webkit2.h>
 #include <jsc/jsc.h>
 #include <cmath>
@@ -337,30 +338,19 @@ struct Host {
         webkit_uri_scheme_response_set_http_headers(response.get(), headers);
         webkit_uri_scheme_request_finish_with_response(request, response.get());
     }
-    /// Every regular file under `assets/`, read now: the application's own
-    /// directory is what it ships, and nothing outside it -- a symbolic link
-    /// included -- is served. Read once, so a rebuild while the window is open
-    /// changes nothing under it.
-    void load_assets(const std::filesystem::path& dir) {
-        size_t total = 0;
+    /// One file of the page, served as `name`.
+    void add_asset(const std::string& name, std::string bytes, size_t& total) {
+        if (assets.size() >= max_assets) throw std::runtime_error("too many assets");
+        if (bytes.size() > max_asset || total + bytes.size() > max_total)
+            throw std::runtime_error("asset exceeds size limit: " + name);
+        total += bytes.size();
+        assets.emplace(origin + name, std::move(bytes));
+    }
+    /// What every page needs, and the policy, once the assets are in.
+    void finish_assets() {
         for (const char* name : {"index.html", "main.mjs", "dom.mjs", "worker.mjs",
                                 "dream-browser.mjs", "dream-browser.wasm", "frontend.dream"})
-            if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(dir / name)))
-                throw std::runtime_error(std::string("missing asset: ") + name);
-        for (auto it = std::filesystem::recursive_directory_iterator(dir); it != std::filesystem::end(it); ++it) {
-            std::error_code ec;
-            if (!std::filesystem::is_regular_file(it->symlink_status(ec)) || ec) continue;
-            if (assets.size() >= max_assets) throw std::runtime_error("too many assets");
-            std::ifstream file(it->path(), std::ios::binary | std::ios::ate);
-            const auto size = file.tellg();
-            if (!file || size < 0 || uint64_t(size) > max_asset || total + size_t(size) > max_total)
-                throw std::runtime_error("asset exceeds size limit: " + it->path().string());
-            std::string bytes(size_t(size), '\0');
-            file.seekg(0);
-            if (!file.read(bytes.data(), size)) throw std::runtime_error("cannot read asset: " + it->path().string());
-            total += size_t(size);
-            assets.emplace(origin + std::filesystem::relative(it->path(), dir).generic_string(), std::move(bytes));
-        }
+            if (!assets.count(std::string(origin) + name)) throw std::runtime_error(std::string("missing asset: ") + name);
         // The policy build.py wrote into the page, sent as a header too, so the
         // two never disagree about what the page may reach.
         if (auto found = assets.find(std::string(origin) + "csp.txt"); found != assets.end()) {
@@ -369,23 +359,81 @@ struct Host {
             if (!policy.empty() && policy.find_first_of("\r\n") == std::string::npos) csp = policy;
         }
     }
+    /// Every regular file under `assets/`, read now: the application's own
+    /// directory is what it ships, and nothing outside it -- a symbolic link
+    /// included -- is served. Read once, so a rebuild while the window is open
+    /// changes nothing under it.
+    void load_assets(const std::filesystem::path& dir) {
+        size_t total = 0;
+        for (auto it = std::filesystem::recursive_directory_iterator(dir); it != std::filesystem::end(it); ++it) {
+            std::error_code ec;
+            if (!std::filesystem::is_regular_file(it->symlink_status(ec)) || ec) continue;
+            std::ifstream file(it->path(), std::ios::binary | std::ios::ate);
+            const auto size = file.tellg();
+            if (!file || size < 0 || uint64_t(size) > max_asset)
+                throw std::runtime_error("asset exceeds size limit: " + it->path().string());
+            std::string bytes(size_t(size), '\0');
+            file.seekg(0);
+            if (!file.read(bytes.data(), size)) throw std::runtime_error("cannot read asset: " + it->path().string());
+            add_asset(std::filesystem::relative(it->path(), dir).generic_string(), std::move(bytes), total);
+        }
+        finish_assets();
+    }
+    /// The page an image carries: each payload named `graphics/PATH` is the
+    /// file at PATH. Copied out, as a directory's are read, so the map holds
+    /// what it serves whatever happens to the file the image was mapped from.
+    void load_assets(const Image& image) {
+        size_t total = 0;
+        constexpr std::string_view prefix = "graphics/";
+        for (uint32_t i = 0; i < image.data_count(); ++i) {
+            const std::string_view name = image.data_name(i);
+            if (!name.starts_with(prefix) || name.size() == prefix.size()) continue;
+            if (image.data_length(i) > max_asset) throw std::runtime_error("asset exceeds size limit: " + std::string(name));
+            add_asset(std::string(name.substr(prefix.size())),
+                      std::string(image.data_bytes(i), size_t(image.data_length(i))), total);
+        }
+        finish_assets();
+    }
+    /// The backend: this VM again, running `argv` with its standard input and
+    /// output as the pipes the page's commands go over.
+    void start_backend(const std::vector<std::string>& argv) {
+        if (std::getenv("DREAM_GRAPHICS_TRACE")) std::fputs("graphics: starting backend\n", stderr);
+        std::vector<const char*> args;
+        for (const auto& a : argv) args.push_back(a.c_str());
+        args.push_back(nullptr);
+        GError* error = nullptr;
+        backend = hold(g_subprocess_newv(args.data(),
+            GSubprocessFlags(G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE), &error));
+        if (!backend) {
+            const std::string reason = error->message;
+            g_error_free(error);
+            throw std::runtime_error(reason);
+        }
+    }
     void start(const std::filesystem::path& application) {
         load_assets(application / "assets");
         // A backend is optional: without one, a command is answered
         // `backend_unavailable`, as it is in a browser tab.
-        if (std::filesystem::exists(application / "backend.dream")) {
-            const auto image = std::filesystem::canonical(application / "backend.dream").string();
-            if (std::getenv("DREAM_GRAPHICS_TRACE")) std::fputs("graphics: starting backend\n", stderr);
-            const auto executable = std::filesystem::canonical("/proc/self/exe").string();
-            GError* error = nullptr;
-            backend = hold(g_subprocess_new(GSubprocessFlags(G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE),
-                &error, executable.c_str(), image.c_str(), nullptr));
-            if (!backend) {
-                const std::string reason = error->message;
-                g_error_free(error);
-                throw std::runtime_error(reason);
-            }
+        if (std::filesystem::exists(application / "backend.dream"))
+            start_backend({std::filesystem::canonical("/proc/self/exe").string(),
+                           std::filesystem::canonical(application / "backend.dream").string()});
+        open_view();
+    }
+    /// An application image: its page from its payloads, and its program as
+    /// the backend when `app.json` says it is one rather than the frontend.
+    /// `--headless` is what stops the backend opening a window of its own.
+    void start(const Image& image, const std::string& path, const std::vector<std::string>& program_args) {
+        load_assets(image);
+        const auto manifest = assets.find(std::string(origin) + "app.json");
+        if (manifest != assets.end() && manifest->second.find("\"backend\":true") != std::string::npos) {
+            std::vector<std::string> argv = {std::filesystem::canonical("/proc/self/exe").string(), "--headless",
+                                             std::filesystem::canonical(path).string()};
+            argv.insert(argv.end(), program_args.begin(), program_args.end());
+            start_backend(argv);
         }
+        open_view();
+    }
+    void open_view() {
         if (std::getenv("DREAM_GRAPHICS_TRACE")) std::fputs("graphics: creating webview\n", stderr);
         auto* security = webkit_web_context_get_security_manager(context.get());
         webkit_security_manager_register_uri_scheme_as_secure(security, "dream");
@@ -478,7 +526,32 @@ int run_graphics(const std::string& application) {
         if (std::getenv("DREAM_GRAPHICS_TRACE")) std::fputs("graphics: constructing host\n", stderr);
         Host host;
         if (std::getenv("DREAM_GRAPHICS_TRACE")) std::fputs("graphics: loading application\n", stderr);
-        host.start(std::filesystem::canonical(application));
+        // An application image works here too, so `--graphics` takes what
+        // `mind build` makes as well as a directory laid out by hand.
+        if (std::filesystem::is_regular_file(application)) {
+            Image image;
+            std::string error;
+            if (!image.load_file(application, error)) throw std::runtime_error(error);
+            host.start(image, application, {});
+        } else {
+            host.start(std::filesystem::canonical(application));
+        }
+        if (!host.done) gtk_main();
+        return host.status;
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "dream graphics: %s\n", error.what());
+        return 1;
+    }
+}
+
+int run_graphics_image(const Image& image, const std::string& path, const std::vector<std::string>& args) {
+    if ((!std::getenv("DISPLAY") && !std::getenv("WAYLAND_DISPLAY")) || !gtk_init_check(nullptr, nullptr)) {
+        std::fputs("dream: graphics_unavailable: no display (run it with `--headless` for its backend alone)\n", stderr);
+        return 1;
+    }
+    try {
+        Host host;
+        host.start(image, path, args);
         if (!host.done) gtk_main();
         return host.status;
     } catch (const std::exception& error) {

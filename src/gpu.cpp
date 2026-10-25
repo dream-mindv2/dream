@@ -759,6 +759,16 @@ struct Buffer {
 
 bool available(std::string* why) { return ready(why) != nullptr; }
 
+std::string library_found() {
+    for (const auto& name : library_names()) {
+        if (void* lib = open_library(name.c_str())) {
+            close_library(lib);
+            return name;
+        }
+    }
+    return "";
+}
+
 std::string device_name() {
     std::string ignored;
     Device* d = ready(&ignored);

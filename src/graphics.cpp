@@ -30,19 +30,31 @@
 namespace dream {
 
 namespace gtk {
-bool load_graphics_api(std::string* why) {
-    static bool loaded = false;
-    static std::string failed;
-    if (loaded) return true;
-    if (!failed.empty()) { *why = failed; return false; }
+namespace {
+/// WebKitGTK, found as `std.ffi` finds a library: the handle, and the file in
+/// `where`, or null with every place tried in `why`.
+void* find_webkit(std::string* where, std::string* why) {
     // Where a person installs what their system's loader does not know --
     // the same Nix and Homebrew directories `std.foreign`'s `library_dirs`
     // names, since this is that search made from C++.
     const std::vector<std::string> dirs = {"~/.nix-profile/lib", "/run/current-system/sw/lib",
                                            "/nix/var/nix/profiles/default/lib", "/home/linuxbrew/.linuxbrew/lib"};
+    return find_system_library("webkit2gtk", {"libwebkit2gtk-4.1.so.0", "libwebkit2gtk-4.0.so.37"}, dirs, where, why);
+}
+}  // namespace
+
+std::string webkit_found() {
+    std::string where, why;
+    return find_webkit(&where, &why) ? where : "";
+}
+
+bool load_graphics_api(std::string* why) {
+    static bool loaded = false;
+    static std::string failed;
+    if (loaded) return true;
+    if (!failed.empty()) { *why = failed; return false; }
     std::string where;
-    void* lib = find_system_library("webkit2gtk", {"libwebkit2gtk-4.1.so.0", "libwebkit2gtk-4.0.so.37"}, dirs,
-                                    &where, &failed);
+    void* lib = find_webkit(&where, &failed);
     if (!lib) {
         failed += "\nInstall WebKitGTK 4.1 (with GTK 3) to open windows: webkit2gtk4.1 (Fedora), libwebkit2gtk-4.1-0"
                   " (Debian, Ubuntu), webkit2gtk-4.1 (Arch), webkitgtk_4_1 (Nix).";
@@ -636,6 +648,8 @@ int run_graphics(const std::string& application) {
     }
 }
 
+std::string graphics_library() { return webkit_found(); }
+
 int run_graphics_image(const Image& image, const std::string& path, const std::vector<std::string>& args) {
     if (!open_display(" (run it with `--headless` for its backend alone)")) return 1;
     try {
@@ -655,6 +669,7 @@ int run_graphics(const std::string&) {
     std::fputs("dream: graphics_unavailable: windows are opened on desktop Linux only, for now\n", stderr);
     return 1;
 }
+std::string graphics_library() { return ""; }
 int run_graphics_image(const Image&, const std::string&, const std::vector<std::string>&) {
     std::fputs("dream: graphics_unavailable: this image is a graphics application, and windows are opened on "
                "desktop Linux only, for now; run it with `--headless` for its backend alone\n", stderr);

@@ -15,6 +15,7 @@
 #include "builtins.hpp"
 #include "debug.hpp"
 #include "image.hpp"
+#include "build_info.hpp"
 #include "graphics.hpp"
 #include <thread>
 #include "interp.hpp"
@@ -433,6 +434,7 @@ int dream_main(int argc, char** argv) {
             return 0;
         } else if (a == "--version") {
             std::printf("dream %s (%s)\n", DREAM_VERSION, DREAM_COMMIT);
+            for (const auto& [part, what] : build_features()) std::printf("  %-8s %s\n", part.c_str(), what.c_str());
             return 0;
         } else if (a == "--graphics") {
             const std::string application = next("--graphics");

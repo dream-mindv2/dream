@@ -19,4 +19,7 @@ int run_graphics(const std::string& application);
 /// `graphics/` payloads, and the image itself run `--headless` as the
 /// backend, given `args`.
 int run_graphics_image(const Image& image, const std::string& path, const std::vector<std::string>& args);
+/// The WebKitGTK a window would use, as a file, or "" when there is none
+/// here (or no windows on this platform).
+std::string graphics_library();
 }

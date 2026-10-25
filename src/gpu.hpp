@@ -40,6 +40,10 @@ enum Dtype : int { F64 = 0, F32 = 1 };
 /// Whether a device is usable, finding one on the first call. When it is not,
 /// `why` says why: no OpenCL library, no device, a kernel that would not build.
 bool available(std::string* why);
+/// The OpenCL library `available` would load, or "" when none opens: opened
+/// and closed again, without asking it for a platform or a device, which is
+/// what can take a driver a second.
+std::string library_found();
 /// The device's name, or "" when there is none.
 std::string device_name();
 /// Whether the device can hold `F64` buffers.

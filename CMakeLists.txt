@@ -803,6 +803,7 @@ set(DREAM_SOURCES
   src/scheduler.cpp
   src/stack_thread.cpp
   src/graphics.cpp
+  src/build_info.cpp
   src/runtime.cpp
   src/capi.cpp
   src/tensor.cpp
@@ -1126,6 +1127,10 @@ if(NOT DREAM_PGO STREQUAL "OFF")
       PRIVATE
       "-fprofile-use=${DREAM_PGO_DIR}"
       -Werror=missing-profile)
+    target_compile_definitions(
+      dream
+      PRIVATE
+      DREAM_PGO_USE=1)
 
   else()
     message(
@@ -1205,6 +1210,10 @@ target_link_libraries(
   dream_cli
   PRIVATE
   dream)
+
+if(DREAM_SELF_CONTAINED)
+  target_compile_definitions(dream PRIVATE DREAM_SELF_CONTAINED=1)
+endif()
 
 if(DREAM_SELF_CONTAINED AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
   target_link_options(dream PRIVATE -static-libstdc++ -static-libgcc)

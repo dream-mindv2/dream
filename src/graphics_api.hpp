@@ -204,5 +204,8 @@ DREAM_GTK_FUNCTIONS(DREAM_GTK_POINTER)
 /// Find WebKitGTK and every function above in it, once. False, with every
 /// place that was tried or the function that was missing, when it cannot.
 bool load_graphics_api(std::string* why);
+/// The WebKitGTK file `load_graphics_api` would use, or "" when none is
+/// found. It is opened, which starts nothing: GTK is not initialised.
+std::string webkit_found();
 
 }  // namespace dream::gtk

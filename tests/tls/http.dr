@@ -19,8 +19,8 @@ import std.http.server;
 
 let fixture! : :string -> :string -> :string;
 let fixture! dir name = match file.read! (dir + "/" + name) {
-    () => raise! ("missing fixture " + name),
-    text => text,
+    Option.none => raise! ("missing fixture " + name),
+    Option.some(text) => text,
 };
 
 let app : :map;

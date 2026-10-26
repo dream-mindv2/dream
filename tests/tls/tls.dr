@@ -30,8 +30,8 @@ let dir! u = match os.args! () {
 
 let fixture! : :string -> :string;
 let fixture! name = match file.read! (dir! () + "/" + name) {
-    () => raise! ("missing fixture " + name),
-    text => text,
+    Option.none => raise! ("missing fixture " + name),
+    Option.some(text) => text,
 };
 
 let server_identity! : :unit -> :map;

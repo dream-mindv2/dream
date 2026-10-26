@@ -60,7 +60,7 @@ import std.tls;
 let main! = match os.args! () {
     ["client", port, dir] => {
         let sock = net.connect! "127.0.0.1" (match num.parse_int port { () => 0, n => n });
-        tls.connect! sock %{ :host => "localhost", :ca => file.read! (dir + "/ca.pem") }
+        tls.connect! sock %{ :host => "localhost", :ca => Option.unwrap! (file.read! (dir + "/ca.pem")) }
         streams.write_all! sock "hello from dream\n"
         console.print! (io.read! sock 4096)
         io.close! sock
@@ -68,7 +68,7 @@ let main! = match os.args! () {
     ["probe", port, dir] => {
         let outcome = try! {
             let sock = net.connect! "127.0.0.1" (match num.parse_int port { () => 0, n => n });
-            tls.connect! sock %{ :host => "localhost", :ca => file.read! (dir + "/ca.pem") }
+            tls.connect! sock %{ :host => "localhost", :ca => Option.unwrap! (file.read! (dir + "/ca.pem")) }
             io.close! sock
             :ok
         } catch e { error.kind e };
@@ -78,7 +78,7 @@ let main! = match os.args! () {
         let listener = net.listen! 0;
         console.print! (to_string (net.port! listener))
         let conn = net.accept! listener;
-        tls.accept! conn %{ :identity => file.read! (dir + "/server.p12"), :password => "dream" }
+        tls.accept! conn %{ :identity => Option.unwrap! (file.read! (dir + "/server.p12")), :password => "dream" }
         streams.write_all! conn ("dream heard: " + io.read! conn 100)
         io.close! conn
     },

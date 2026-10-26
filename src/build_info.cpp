@@ -10,6 +10,7 @@
 #include "build_info.hpp"
 #include "gpu.hpp"
 #include "graphics.hpp"
+#include "os.hpp"
 #include "tls.hpp"
 #ifdef DREAM_HAVE_LLVM
 #include "llvm/Config/llvm-config.h"
@@ -80,6 +81,12 @@ std::vector<std::pair<std::string, std::string>> build_features() {
     build += ", with assertions";
 #endif
     out.push_back({"build", build});
+    // Where `dream -x`, the standard library and installed programs are found,
+    // in the order searched: what `mind doctor` reads to say what a build
+    // would compile with.
+    std::string dirs;
+    for (const std::string& d : install_dirs()) dirs += (dirs.empty() ? "" : ", ") + d;
+    out.push_back({"install", dirs.empty() ? std::string("none") : dirs});
     return out;
 }
 

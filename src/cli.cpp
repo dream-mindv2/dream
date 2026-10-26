@@ -492,8 +492,16 @@ int dream_main(int argc, char** argv) {
             // so a caretaker (an editor extension, a shell script) cannot read
             // it from its own environment. Printing what the VM would resolve
             // names and packages under is how it is asked: the VM is the one
-            // place the installed path is guaranteed to be right.
-            std::printf("%s\n", MINDV2_PATH.c_str());
+            // place the installed path is guaranteed to be right. Every
+            // directory it searches, in order, separated as PATH is.
+#ifdef _WIN32
+            const char separator = ';';
+#else
+            const char separator = ':';
+#endif
+            std::string dirs;
+            for (const std::string& d : install_dirs()) dirs += (dirs.empty() ? "" : std::string(1, separator)) + d;
+            std::printf("%s\n", dirs.c_str());
             return 0;
         } else if (a == "--jit-policy") {
             const std::string name = next("--jit-policy");

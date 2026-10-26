@@ -39,7 +39,7 @@ std::vector<std::pair<std::string, std::string>> build_features() {
     out.push_back({"jit", "none: interpreted only"});
 #endif
     out.push_back({"tls", tls::backend()});
-#ifdef FFI_STATIC_BUILD
+#if defined(FFI_STATIC_BUILD) || defined(DREAM_SELF_CONTAINED)
     out.push_back({"ffi", "libffi, linked in"});
 #else
     out.push_back({"ffi", "libffi"});

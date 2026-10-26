@@ -417,11 +417,16 @@ if(DREAM_ENABLE_JIT)
     endif()
   endif()
 
+  # A VM without its JIT is an order of magnitude slower, and a warning in the
+  # configure output was all that used to say a build had become one. So a
+  # missing LLVM stops here, as a missing OpenSSL or libffi does, and the JIT
+  # is left out only when someone asks.
   if(NOT DREAM_HAVE_LLVM)
     message(
-      WARNING
-      "Dream: LLVM not found; building interpreter-only. "
-      "Pass -DDREAM_LLVM_CONFIG=<path to llvm-config> to enable the JIT.")
+      FATAL_ERROR
+      "Dream: LLVM 15 or newer was not found, and the JIT needs it. "
+      "Pass -DDREAM_LLVM_CONFIG=<path to llvm-config>, or build without the JIT "
+      "with -DDREAM_ENABLE_JIT=OFF.")
   endif()
 endif()
 

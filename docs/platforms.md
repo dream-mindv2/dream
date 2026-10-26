@@ -37,8 +37,8 @@ zlib and zstd -- so one binary runs on any distribution with a glibc as new as
 the one it was built against. It needs those as archives (PIC libffi, an
 OpenSSL built without zlib, `libstdc++-static`; zlib and zstd only for LLVM's
 sake, with the JIT). It is how the published toolchains are
-built (dream-mindv2/toolchain, `ci/linux.sh`); without LLVM it is
-interpreter-only, like any build.
+built (dream-mindv2/toolchain, `ci/linux.sh`); without LLVM it stops, like
+any build, unless the JIT is turned off with `-DDREAM_ENABLE_JIT=OFF`.
 
 Platform-specific work remains platform-specific:
 

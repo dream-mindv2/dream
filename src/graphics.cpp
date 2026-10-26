@@ -34,12 +34,15 @@ namespace {
 /// WebKitGTK, found as `std.ffi` finds a library: the handle, and the file in
 /// `where`, or null with every place tried in `why`.
 void* find_webkit(std::string* where, std::string* why) {
-    // Where a person installs what their system's loader does not know --
+    // Named as `std.foreign` names it, so `$DREAM_LIB_WEBKIT2GTK_4_1` and a
+    // package's `[system] "webkit2gtk-4.1"` mean this same search; 4.0's file
+    // is tried after 4.1's. Where a person installs what their system's
+    // loader does not know --
     // the same Nix and Homebrew directories `std.foreign`'s `library_dirs`
     // names, since this is that search made from C++.
     const std::vector<std::string> dirs = {"~/.nix-profile/lib", "/run/current-system/sw/lib",
                                            "/nix/var/nix/profiles/default/lib", "/home/linuxbrew/.linuxbrew/lib"};
-    return find_system_library("webkit2gtk", {"libwebkit2gtk-4.1.so.0", "libwebkit2gtk-4.0.so.37"}, dirs, where, why);
+    return find_system_library("webkit2gtk-4.1", {"libwebkit2gtk-4.1.so.0", "libwebkit2gtk-4.0.so.37"}, dirs, where, why);
 }
 }  // namespace
 

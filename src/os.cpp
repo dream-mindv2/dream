@@ -1354,23 +1354,30 @@ std::string install_path() {
     return "";
 }
 
-/// The installation, then `~/.mindv2` when it is not already in it. A
-/// toolchain's or a package's installation is the language as it shipped,
+/// The installation, then the one this VM shipped with, then `~/.mindv2`,
+/// each when it is not already in the list.
+///
+/// A toolchain's or a package's installation is the language as it shipped,
 /// one version of it, and a program a person installed (`mind install`) is
 /// not part of that: it lives in their own `~/.mindv2`, which outlasts every
-/// toolchain they switch between, and is still found by name.
+/// toolchain they switch between, and is still found by name. And a
+/// `$MINDV2_PATH` comes first but does not hide the VM's own installation: one
+/// left in a session from before a toolchain -- pointing at a `~/.mindv2`
+/// that no longer holds a compiler -- otherwise made `mind` unable to find
+/// `dreams.dream` while the toolchain had one beside the VM.
 std::vector<std::string> install_dirs() {
     std::vector<std::string> dirs = split_dir_list(install_path());
-    const std::string home = home_dir();
-    if (!home.empty()) {
-        const std::string own = home + "/.mindv2";
+    auto add = [&](const std::string& dir) {
+        if (dir.empty()) return;
         std::error_code ec;
-        bool listed = false;
         for (const std::string& d : dirs) {
-            if (d == own || std::filesystem::equivalent(expand_home(d), own, ec)) listed = true;
+            if (d == dir || std::filesystem::equivalent(expand_home(d), dir, ec)) return;
         }
-        if (!listed) dirs.push_back(own);
-    }
+        if (std::filesystem::is_directory(dir, ec)) dirs.push_back(dir);
+    };
+    add(own_installation());
+    const std::string home = home_dir();
+    if (!home.empty()) add(home + "/.mindv2");
     return dirs;
 }
 

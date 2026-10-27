@@ -149,7 +149,7 @@ with tempfile.TemporaryDirectory(prefix='dream-console-') as directory:
                     os.close(slave)
 
     # Prompt bytes must arrive before the process receives any input.
-    image = compile_program('let main! = console.print! (console.prompt! "Ready? ");')
+    image = compile_program('let main! = console.print! (Option.unwrap_or "" (console.prompt! "Ready? "));')
     child = subprocess.Popen([a.dream, str(image)], stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:

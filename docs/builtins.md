@@ -114,8 +114,8 @@ Strings are byte-indexed internally (UTF-8 storage). Offsets in the functions be
 |-----------|-------|-----------|-------------|
 | `_to_float` | `num.to_float n` | `integer\|float → float` | Converts a number to `float`. Returns a `float` unchanged. |
 | `_to_int` | `num.to_int x` | `integer\|float → integer` | Converts a number to `integer`. Truncates toward zero (like C cast). For floor-division behavior use `math.floor` first. |
-| `_parse_int` | `num.parse_int s` | `string → integer\|unit` | Parses a base-10 integer from a string. Returns `unit` on failure. The entire string must be a valid integer (trailing non-numeric characters cause failure). |
-| `_parse_float` | `num.parse_float s` | `string → float\|unit` | Parses a floating-point number from a string. Returns `unit` on failure. |
+| `_parse_int` | `num.parse_int s` | `string → integer\|unit` | Parses a base-10 integer from a string. Returns `unit` on failure; `num.parse_int` answers `Option.some n` or `Option.none` over it. The entire string must be a valid integer (trailing non-numeric characters cause failure). |
+| `_parse_float` | `num.parse_float s` | `string → float\|unit` | Parses a floating-point number from a string. Returns `unit` on failure; `num.parse_float` answers an `Option` over it. |
 | `_pow` | `num.pow base exponent` | `number → number → number` | Two integers, the exponent zero or more, answer the exact integer, a bignum when it grows past a fixnum (by repeated squaring). A float on either side answers the float `math.pow` does. Raises `:type_error` for an integer base and a negative integer exponent -- the answer's kind follows the base's -- and for an exponent past 64 bits unless the base is 0, 1 or -1. |
 
 ### Atoms

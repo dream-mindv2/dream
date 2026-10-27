@@ -59,7 +59,7 @@ import std.tls;
 
 let main! = match os.args! () {
     ["client", port, dir] => {
-        let sock = net.connect! "127.0.0.1" (match num.parse_int port { () => 0, n => n });
+        let sock = net.connect! "127.0.0.1" (Option.unwrap_or 0 (num.parse_int port));
         tls.connect! sock %{ :host => "localhost", :ca => Option.unwrap! (file.read! (dir + "/ca.pem")) }
         streams.write_all! sock "hello from dream\n"
         console.print! (io.read! sock 4096)
@@ -67,7 +67,7 @@ let main! = match os.args! () {
     },
     ["probe", port, dir] => {
         let outcome = try! {
-            let sock = net.connect! "127.0.0.1" (match num.parse_int port { () => 0, n => n });
+            let sock = net.connect! "127.0.0.1" (Option.unwrap_or 0 (num.parse_int port));
             tls.connect! sock %{ :host => "localhost", :ca => Option.unwrap! (file.read! (dir + "/ca.pem")) }
             io.close! sock
             :ok

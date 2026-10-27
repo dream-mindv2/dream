@@ -74,7 +74,7 @@ let main! = {
     // Data: map keys, text, the wire.
     let m2 = %{ f100 => :hundred, pow 2 64 => :word };
     console.print! [m2.[factorial 100], m2.[pow 2 64], m2.[pow 2 64 + 1 else :absent]]
-    console.print! [num.parse_int "-98765432109876543210", to_string (pow 2 64)]
+    console.print! [Option.unwrap! (num.parse_int "-98765432109876543210"), to_string (pow 2 64)]
     console.print! (vm.wire_decode (vm.wire_encode [f100, 0 - pow 2 64, max + 1]))
 
     // Literals of any size, in expressions and in patterns.

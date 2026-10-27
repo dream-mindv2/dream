@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix='dream-console-') as directory:
         console.print! (console.confirm! "Continue?" false)
         console.print! (console.prompt_int! "Count? ")
         console.print! (console.confirm! "EOF?" true)
-    };''', '雪\ntrue\n42\n()\n',
+    };''', 'Option.some("雪")\nOption.some(true)\nOption.some(42)\nOption.none\n',
           'Name? Continue? [y/N] Please answer yes or no.\nContinue? [y/N] '
           'Count? Please enter an integer.\nCount? EOF? [Y/n] ',
           '雪\r\nmaybe\n YES \nnot a number\n42\n')
@@ -62,9 +62,9 @@ with tempfile.TemporaryDirectory(prefix='dream-console-') as directory:
         console.print! (console.read_line! ())
         console.print! (console.read_line! ())
         console.print! (console.read_line! ())
-    };''', '\nlast\n()\n', stdin='\nlast')
+    };''', 'Option.some("")\nOption.some("last")\nOption.none\n', stdin='\nlast')
     check('let main! = console.print! (console.confirm! "Proceed?" false);',
-          'false\n', 'Proceed? [y/N] ', '\n')
+          'Option.some(false)\n', 'Proceed? [y/N] ', '\n')
 
     input_file, output_file = root / 'input.txt', root / 'output.txt'
     input_file.write_text('abcd\n')
@@ -113,7 +113,7 @@ with tempfile.TemporaryDirectory(prefix='dream-console-') as directory:
         console.print! (io.is_open! input && io.is_open! out)
         io.close! input
         io.close! out
-    }};''', 'injected\ntrue\n')
+    }};''', 'Option.some("injected")\ntrue\n')
     assert output_file.read_text() == 'Question: '
 
     if os.name == 'posix':

@@ -62,7 +62,7 @@ bool aot_object(std::string_view ir, int opt_level, std::string* object, std::st
                             ? llvm::Triple(llvm::sys::getDefaultTargetTriple())
                             : module->getTargetTriple());
     std::string lookup;
-    const llvm::Target* target = llvm::TargetRegistry::lookupTarget(triple.str(), lookup);
+    const llvm::Target* target = llvm::TargetRegistry::lookupTarget("", triple, lookup);
     if (!target) {
         *error = lookup;
         return false;

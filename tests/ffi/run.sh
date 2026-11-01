@@ -48,6 +48,23 @@ for tier in "" "--no-jit"; do
         fail=1
     fi
 done
+# The same image compiled native, where no libffi is linked at all: a C call is
+# generated code loading registers and a callback is a stub written at run time,
+# and it must print the same thing. x86-64 Linux is what the AOT writes so far.
+if [ "$(uname -s)-$(uname -m)" = "Linux-x86_64" ]; then
+    if timeout 300 "$dream" "$dreams" --aot -L "$root/mind" -o "$tmp/ffi_native" "$tmp/ffi.dream" >"$tmp/build" 2>&1; then
+        timeout 20 "$tmp/ffi_native" >"$tmp/out" 2>&1
+        if ! diff -u "$here/ffi.expected" "$tmp/out" >"$tmp/diff"; then
+            echo "FAIL ffi (native)"
+            head -40 "$tmp/diff"
+            fail=1
+        fi
+    else
+        echo "FAIL ffi (native build)"
+        cat "$tmp/build"
+        fail=1
+    fi
+fi
 # The same library as one installed on the system: a plain shared object in a
 # directory of its own, found by `from system "sample"` through each way a
 # person can point at it, and not found -- with the reason -- when they do not.

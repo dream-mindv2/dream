@@ -1,4 +1,5 @@
 #include "builtins.hpp"
+#include "jit.hpp"
 #include "regex.hpp"
 #include "digest.hpp"
 
@@ -1823,6 +1824,7 @@ NativeResult vm_share_arenas(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_node_section(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_index_section(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_wire_decode(Process& p, Value self, Value* args, uint32_t n);
+NativeResult vm_llvm_object(Process& p, Value self, Value* args, uint32_t n);
 }  // namespace
 
 ModuleDef make_vm_module() {
@@ -1864,6 +1866,8 @@ ModuleDef make_vm_module() {
                          {"pure_image_function", 3, 0b110, vm_image_function, 1},
                          {"locate_image!", 1, 0b0, vm_locate_image},
                          {"image_digest", 1, 0b1, vm_image_digest},
+                         // The AOT compiler's code generator; dream/src/aot_object.cpp.
+                         {"llvm_object!", 2, 0b11, vm_llvm_object},
                          // `std.wire`'s format, done here; see "The wire format, natively".
                          {"wire_encode", 1, 0b0, vm_wire_encode, 0, true},
                          {"wire_decode", 1, 0b1, vm_wire_decode},
@@ -5996,6 +6000,24 @@ Value make_result(Heap& h, Runtime& rt, bool ok, Value value) {
     static_cast<RecordObj*>(as_obj(r))->items()[0] = value;
     return r;
 }
+
+namespace {
+/// `Result.ok` with the object's bytes, or `Result.error` with what LLVM said. A
+/// module the compiler wrote badly is the compiler's bug, but it is still an answer.
+NativeResult vm_llvm_object(Process& p, Value, Value* args, uint32_t) {
+    Value ir = resolve(args[0]);
+    Value level = resolve(args[1]);
+    if (!is_obj(ir, ObjType::Str) || !is_fixnum(level)) {
+        return type_fail(p, "llvm_object! needs IR as a string and an optimization level");
+    }
+    auto* text = static_cast<StrObj*>(as_obj(ir));
+    std::string object, error;
+    const bool ok = aot_object(std::string_view(text->data(), text->len), int(fixnum_value(level)), &object, &error);
+    const std::string& answer = ok ? object : error;
+    Value bytes = p.heap().make_string(answer.data(), uint32_t(answer.size()));
+    return NativeResult::ok(make_result(p.heap(), p.runtime(), ok, bytes));
+}
+}  // namespace
 
 bool compare_for_wire(Process& p, Value a, Value b, int* out) { return compare_values(p, a, b, 0, out); }
 

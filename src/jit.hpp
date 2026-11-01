@@ -46,6 +46,11 @@ inline const char* jit_policy_name(JitPolicy policy) {
     return "density";
 }
 
+/// LLVM IR text compiled to an object file for the AOT compiler, at `opt_level`
+/// 0, 1 or 2. False with `*error` said; aot_object.cpp, or jit_stub.cpp in a build
+/// with no LLVM, which always says so.
+bool aot_object(std::string_view ir, int opt_level, std::string* object, std::string* error);
+
 /// Signature of a JIT-compiled function body.
 ///
 /// `status` reports what happened: 0 the return value is a result, 1 it is an

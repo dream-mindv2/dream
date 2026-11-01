@@ -5,6 +5,11 @@
 
 namespace dream {
 
+bool aot_object(std::string_view, int, std::string*, std::string* error) {
+    *error = "this VM has no LLVM, so it cannot make native code";
+    return false;
+}
+
 struct Jit::Impl {};
 
 bool Jit::available() { return false; }

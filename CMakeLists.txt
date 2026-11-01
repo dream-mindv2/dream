@@ -130,7 +130,7 @@ endif()
 # an object nothing refers to is never pulled in -- so this is the list of what
 # jit.cpp may touch, not a measurement. build.dr's `llvm_parts` is the same list.
 set(DREAM_LLVM_COMPONENTS core orcjit native support target analysis passes ipo
-                          instcombine scalaropts transformutils)
+                          instcombine scalaropts transformutils irreader asmparser)
 
 # `--system-libs` is the link line LLVM *itself* was built with, so it names the
 # dependencies of the whole installation rather than of the components above.
@@ -837,7 +837,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND NOT MSVC)
 endif()
 
 if(DREAM_HAVE_LLVM)
-  list(APPEND DREAM_SOURCES src/jit.cpp src/jit_rt.cpp)
+  list(APPEND DREAM_SOURCES src/jit.cpp src/jit_rt.cpp src/aot_object.cpp)
 else()
   list(APPEND DREAM_SOURCES src/jit_stub.cpp src/jit_rt.cpp)
 endif()
@@ -1175,12 +1175,12 @@ if(DREAM_HAVE_LLVM)
   if(NOT DREAM_LLVM_RTTI STREQUAL "YES")
     if(MSVC)
       set_source_files_properties(
-        src/jit.cpp
+        src/jit.cpp src/aot_object.cpp
         PROPERTIES
         COMPILE_OPTIONS "/GR-")
     else()
       set_source_files_properties(
-        src/jit.cpp
+        src/jit.cpp src/aot_object.cpp
         PROPERTIES
         COMPILE_OPTIONS "-fno-rtti")
     endif()

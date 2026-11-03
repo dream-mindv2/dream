@@ -117,6 +117,23 @@ long fold_range(long n, long (*f)(long, long), long init) {
 
 double apply_twice(double (*f)(double), double x) { return f(f(x)); }
 
+// The callback called from a thread of the library's own, which a runtime must refuse: a
+// process is not something two threads may run at once.
+#include <pthread.h>
+struct on_thread { double (*f)(double); double x; double out; };
+static void* run_on_thread(void* arg) {
+    struct on_thread* t = arg;
+    t->out = t->f(t->x);
+    return 0;
+}
+double apply_on_thread(double (*f)(double), double x) {
+    struct on_thread t = { f, x, 0.0 };
+    pthread_t th;
+    if (pthread_create(&th, 0, run_on_thread, &t) != 0) return -1.0;
+    pthread_join(th, 0);
+    return t.out;
+}
+
 static int (*compare_by)(int, int);
 static int trampoline(const void* a, const void* b) {
     return compare_by(*(const int*)a, *(const int*)b);

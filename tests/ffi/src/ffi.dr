@@ -37,6 +37,7 @@ foreign sample from embedded "sample" {
     count_byte : :bytes -> :size -> :int -> :size
     fold_range : :long -> (:long -> :long -> :long) -> :long -> :long
     apply_twice : (:double -> :double) -> :double -> :double
+    apply_on_thread : (:double -> :double) -> :double -> :double
     sort! : :buffer -> :size -> (:int -> :int -> :int) -> :void = sort_ints
     fill! : Point -> :i32 -> :double -> :void = point_fill
     point_sum : Point -> :double
@@ -125,6 +126,8 @@ let callbacks! u = {
     console.print! (foreign.read_array! xs 0 :int 5)
     // An error in a callback is raised once C has returned.
     console.print! (try! { sample.fold_range 3 (fn acc i -> if i == 2 { acc / 0 } else { acc + i }) 0 } catch e { e })
+    // One called from a thread C made is refused, as a process cannot run on two threads.
+    console.print! (try! { sample.apply_on_thread (fn x -> x * 3.0) 2.0 } catch e { e })
     // An impure one is refused before C is called at all.
     console.print! (try! { sample.sort! xs 5 compare! } catch e { e })
 };

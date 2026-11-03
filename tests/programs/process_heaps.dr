@@ -1,0 +1,96 @@
+// What a process may hand another, now that each has a heap of its own in native code: a
+// message, a process's work and its answer are copied, and a top-level value computed once is
+// every process's to read. Each of these is something a copy could get wrong -- sharing, a
+// cycle, a suspension, a value large enough to need more than one segment -- and each answer
+// must be what the VM says.
+import std.console;
+import std.error;
+import std.list;
+import std.map;
+import std.proc;
+
+// A value computed once, the first time any process asks.
+let table = list.fold (fn m i -> m.[i => i * i]) %{} (list.range 0 1000);
+let total = list.sum (list.map (fn i -> table.[i]) (list.range 0 1000));
+// A lazy infinite list held by a top-level value: what each process forces of it is shared.
+let naturals = list.iterate (fn n -> n + 1) 0;
+
+let rec loops = loops + 1;
+// Long enough to be killed in the middle of, usually: whether the kill lands first is a race,
+// and so is not what is printed.
+let slow = map.size (list.fold (fn m i -> m.[i * 7 => i]) %{} (list.range 0 100000));
+
+let echo! () = {
+    let [from, v] = recv! ();
+    send! from v
+};
+
+let bounce! v = {
+    let e = spawn! $( echo! () );
+    send! e [self! (), v];
+    recv! ()
+};
+
+let lazy_pair n = [n, list.sum (list.range 0 n)];
+
+let main! = {
+    // A top-level value read from many processes at once, and from this one after.
+    let ps = list.forced (list.map (fn i -> spawn! $( total + i )) (list.range 0 8));
+    console.print! (list.map (fn p -> join! p) ps)
+    console.print! total
+    console.print! (join! (spawn! $( list.take 5 (list.drop 10 naturals) )))
+    console.print! (list.take 3 (list.drop 12 naturals))
+
+    // Sharing survives a copy: the same list twice is still one list, and so equal.
+    let xs = list.range 0 5;
+    let [a, b] = bounce! [xs, xs];
+    console.print! [a, b, a == b]
+
+    // Records, maps, floats, strings, big integers and a function, all through one message.
+    let m = %{"one" => 1.5, "two" => [2, 2], "big" => 1267650600228229401496703205376 * 3};
+    let back = bounce! [m, "text", fn x -> x * 3];
+    console.print! (back.[0]).["big"]
+    console.print! (back.[0]).["one"]
+    console.print! back.[1]
+    console.print! ((back.[2]) 14)
+
+    // A message large enough to need many segments.
+    let big = list.range 0 200000;
+    console.print! (list.sum (bounce! big))
+
+    // A suspension travels as itself and is evaluated again where it lands.
+    let p = spawn! $( lazy_pair 100 );
+    console.print! (join! p)
+
+    // What a process answers is read by every process that joins it.
+    let q = spawn! $( list.map (fn i -> i * 2) (list.range 0 10) );
+    let r1 = spawn! $( list.sum (join! q) );
+    let r2 = spawn! $( list.length (join! q) );
+    console.print! [join! r1, join! r2, list.sum (join! q)]
+
+    // A top-level value that depends on itself is an error in every process that asks.
+    console.print! (proc.outcome! (spawn! $( loops )) |> Result.is_ok)
+    console.print! (try! { loops } catch e { :loop })
+
+    // A monitor's message and a kill's reason cross heaps too.
+    let w = spawn! $( recv! () );
+    proc.monitor! w
+    proc.kill! w [:stop, "now"]
+    console.print! (proc.recv_where! (fn m -> proc.is_down_of w m) |> (fn d -> d.[0]))
+    console.print! (match proc.outcome! w { Result.error(e) => error.payload e, _ => :wrong })
+
+    // A process killed while it forces a top-level value leaves it for the next to ask.
+    let k = spawn! $( slow );
+    proc.sleep! 2
+    proc.kill! k :stop
+    console.print! (match proc.outcome! k { Result.error(e) => error.kind e, Result.ok(_) => :killed })
+    console.print! slow
+
+    // Many processes, each made to collect, while messages wait for them.
+    let workers = list.forced (list.map (fn i -> spawn! $( {
+        let got = recv! ();
+        list.sum (list.map (fn j -> j + got) (list.range 0 20000))
+    } )) (list.range 0 20));
+    list.each! (fn w -> send! w 1) workers
+    console.print! (list.sum (list.map (fn w -> join! w) workers))
+};

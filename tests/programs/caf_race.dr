@@ -1,0 +1,28 @@
+// Top-level values forced by many processes at once. In native code each process has a heap of
+// its own and a top-level value is claimed by one of them, evaluated, and promoted where all can
+// read it; everyone else waits for it. One that depends on another, a lazy list whose elements
+// are forced by different processes in a different order, and one that fails must all come out
+// the same in every process, whichever got there first.
+import std.console;
+import std.list;
+import std.map;
+
+let base = list.sum (list.range 0 300000);
+let squares = list.fold (fn m i -> m.[i => i * i]) %{} (list.range 0 20000);
+let derived = base + map.size squares + squares.[1234];
+let rec odds = list.filter (fn n -> n % 2 == 1) (list.iterate (fn n -> n + 1) 0);
+let broken = list.head (list.drop 5 [1, 2, 3]);
+
+let work! i = {
+    let picked = list.nth (i * 37 % 400) odds;
+    let failed = try! { broken } catch e { :failed };
+    [derived, picked - (i * 37 % 400) * 2, failed]
+};
+
+let main! = {
+    let ps = list.forced (list.map (fn i -> spawn! $( work! i )) (list.range 0 64));
+    let answers = list.map (fn p -> join! p) ps;
+    console.print! (list.length (list.unique answers))
+    console.print! (list.head answers)
+    console.print! (list.take 5 odds)
+};

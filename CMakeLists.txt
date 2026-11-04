@@ -132,6 +132,17 @@ endif()
 set(DREAM_LLVM_COMPONENTS core orcjit native support target analysis passes ipo
                           instcombine scalaropts transformutils irreader asmparser)
 
+# `dreams --aot` makes objects for the machine the VM runs on, which is all a release needs: each
+# platform's VM is built on that platform. A VM that is to build native programs for the others --
+# to test the aarch64 and x86-64 code generators on one machine, under an emulator -- is built
+# with `-DDREAM_AOT_CROSS=ON`, and links those two targets beside the native one.
+option(DREAM_AOT_CROSS "Let the AOT make objects for x86-64 and aarch64 whatever the host" OFF)
+if(DREAM_AOT_CROSS)
+  list(APPEND DREAM_LLVM_COMPONENTS x86codegen x86asmparser x86desc x86info
+                                    aarch64codegen aarch64asmparser aarch64desc aarch64info)
+  add_compile_definitions(DREAM_AOT_CROSS=1)
+endif()
+
 # `--system-libs` is the link line LLVM *itself* was built with, so it names the
 # dependencies of the whole installation rather than of the components above.
 # Two of them are dead weight here: libxml2 is for WindowsManifest, and z3

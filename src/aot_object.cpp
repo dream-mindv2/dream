@@ -29,6 +29,21 @@
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 
+#ifdef DREAM_AOT_CROSS
+extern "C" {
+void LLVMInitializeX86TargetInfo();
+void LLVMInitializeX86Target();
+void LLVMInitializeX86TargetMC();
+void LLVMInitializeX86AsmPrinter();
+void LLVMInitializeX86AsmParser();
+void LLVMInitializeAArch64TargetInfo();
+void LLVMInitializeAArch64Target();
+void LLVMInitializeAArch64TargetMC();
+void LLVMInitializeAArch64AsmPrinter();
+void LLVMInitializeAArch64AsmParser();
+}
+#endif
+
 namespace dream {
 
 bool aot_object(std::string_view ir, int opt_level, std::string* object, std::string* error) {
@@ -37,6 +52,19 @@ bool aot_object(std::string_view ir, int opt_level, std::string* object, std::st
         llvm::InitializeNativeTarget();
         llvm::InitializeNativeTargetAsmPrinter();
         llvm::InitializeNativeTargetAsmParser();
+#ifdef DREAM_AOT_CROSS
+        // The other machines `dreams --aot --target` writes for (`DREAM_AOT_CROSS` in CMake).
+        LLVMInitializeX86TargetInfo();
+        LLVMInitializeX86Target();
+        LLVMInitializeX86TargetMC();
+        LLVMInitializeX86AsmPrinter();
+        LLVMInitializeX86AsmParser();
+        LLVMInitializeAArch64TargetInfo();
+        LLVMInitializeAArch64Target();
+        LLVMInitializeAArch64TargetMC();
+        LLVMInitializeAArch64AsmPrinter();
+        LLVMInitializeAArch64AsmParser();
+#endif
     });
 
     llvm::LLVMContext context;

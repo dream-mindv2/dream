@@ -9,8 +9,8 @@ import std.proc;
 let table = list.map (fn i -> i * 3) (list.range 0 1000);
 
 let rec batches! n !acc = if n == 0 { acc } else {
-    let ps = list.forced (list.map (fn i -> spawn! $( list.map (fn j -> j + i) (list.range 0 20) )) (list.range 0 1000));
-    let s = list.sum (list.map (fn p -> list.sum (join! p)) ps);
+    let ps = list.forced (list.map (fn! i -> spawn! $( list.map (fn j -> j + i) (list.range 0 20) )) (list.range 0 1000));
+    let s = list.sum (list.map (fn! p -> list.sum (join! p)) ps);
     batches! (n - 1) (acc + s + list.sum table)
 };
 

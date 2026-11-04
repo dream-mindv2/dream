@@ -206,11 +206,11 @@ let served! u = {
     section! "a library server"
     sample.clear! ()
     let srv = foreign.start! ();
-    let c = foreign.run! srv (fn () -> sample.new! 5);
+    let c = foreign.run! srv (fn! () -> sample.new! 5);
     console.print! (tag_of c)
-    console.print! (foreign.run! srv (fn () -> sample.add! c 2))
+    console.print! (foreign.run! srv (fn! () -> sample.add! c 2))
     // Any amount of work is one message, and one answer.
-    let [k, n] = foreign.run! srv (fn () -> {
+    let [k, n] = foreign.run! srv (fn! () -> {
         let k = sample.open! c;
         [k, sample.read! k]
     });
@@ -218,21 +218,21 @@ let served! u = {
     // The server owns them, so they mean nothing here...
     console.print! (try! { sample.add! c 1 } catch e { e })
     // ...and work that raises is the caller's error, not the server's end.
-    console.print! (try! { foreign.run! srv (fn () -> sample.add! (unseen k) 1) } catch e { e })
-    console.print! (foreign.run! srv (fn () -> sample.add! c 3))
-    console.print! (foreign.run! srv (fn () -> {
+    console.print! (try! { foreign.run! srv (fn! () -> sample.add! (unseen k) 1) } catch e { e })
+    console.print! (foreign.run! srv (fn! () -> sample.add! c 3))
+    console.print! (foreign.run! srv (fn! () -> {
         let b = foreign.buffer! 8;
         foreign.poke! b 0 :i64 77
         foreign.peek! b 0 :i64
     }))
-    console.print! (list.map tag_of (foreign.run! srv (fn () -> foreign.owned! ())))
-    console.print! (foreign.run! srv (fn () -> { foreign.release! k; foreign.alive! k }))
+    console.print! (list.map tag_of (foreign.run! srv (fn! () -> foreign.owned! ())))
+    console.print! (foreign.run! srv (fn! () -> { foreign.release! k; foreign.alive! k }))
     // Stopping it lets go of the rest.
     foreign.stop! srv
     console.print! (sample.log! ())
     // `here` is the same interface, in this process.
-    let mine = foreign.run! foreign.here (fn () -> sample.new! 1);
-    console.print! (foreign.run! foreign.here (fn () -> sample.add! mine 1))
+    let mine = foreign.run! foreign.here (fn! () -> sample.new! 1);
+    console.print! (foreign.run! foreign.here (fn! () -> sample.add! mine 1))
 };
 
 let main! = {

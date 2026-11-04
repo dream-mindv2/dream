@@ -9,7 +9,7 @@ import std.console;
 let slow n = list.sum (list.range 0 n);
 let work! t = spawn! $( slow t );
 
-let go! xs = list.fold_lazy (fn acc x -> {
+let go! xs = list.fold_lazy (fn! acc x -> {
     let v = join! (work! (x * 20000));
     console.print! ("step " + to_string x);
     acc + v

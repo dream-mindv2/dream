@@ -119,9 +119,9 @@ let main! = {
     console.print! (vm.release! [1, 2])
 
     // 6. Passed around while censuses run.
-    let pairs = strict! (list.map (fn i -> start_pair! i) (list.range 0 4));
+    let pairs = strict! (list.map (fn! i -> start_pair! i) (list.range 0 4));
     let rec churn! !k = if k == 0 { () } else { vm.collect_shared! (); proc.sleep! 2; churn! (k - 1) };
     churn! 100
-    let sums = strict! (list.map (fn p -> join! p) pairs);
+    let sums = strict! (list.map (fn! p -> join! p) pairs);
     console.print! ["passed around", list.all (fn x -> x == expected_sum) sums, freed_to! base]
 };

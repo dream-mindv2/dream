@@ -25,8 +25,8 @@ let main! = {
     console.print! ("still the same:  " + to_string (t.[7]))
 
     // Four children, each reading all of it at once.
-    let kids = strict! (list.map (fn k -> spawn! $( sum_of t (500 * (k + 1)) )) (list.range 0 4));
-    console.print! ("four at once:    " + to_string (strict! (list.map (fn p -> join! p) kids)))
+    let kids = strict! (list.map (fn! k -> spawn! $( sum_of t (500 * (k + 1)) )) (list.range 0 4));
+    console.print! ("four at once:    " + to_string (strict! (list.map (fn! p -> join! p) kids)))
 
     // Garbage around it, so the collector runs with shared values as roots.
     let churn = list.fold_strict (fn acc i -> acc + len (to_string [i, t.[i % 2000]])) 0 (list.range 0 20000);

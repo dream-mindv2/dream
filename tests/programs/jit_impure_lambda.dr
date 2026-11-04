@@ -13,7 +13,7 @@ import std.console;
 let slow n = list.sum (list.range 0 n);
 let work! t = spawn! $( slow t );
 
-let render! xs = str.join_str "," (list.map (fn x -> {
+let render! xs = str.join_str "," (list.map (fn! x -> {
     let v = join! (work! (x * 20000));
     console.print! ("step " + to_string x);
     to_string v

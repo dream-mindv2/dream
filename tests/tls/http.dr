@@ -57,7 +57,7 @@ let suite! dir = {
         } ),
         test.case "the server stops, and every connection with it" $( {
             server.stop! s
-            test.eq! 2 (test.eventually! (fn () -> vm.processes! ()) (fn n -> n <= 2) test.patience)
+            test.eq! 2 (test.eventually! (fn! () -> vm.processes! ()) (fn n -> n <= 2) test.patience)
         } ),
     ];
     test.main_of! [["std.http over TLS", cases]]

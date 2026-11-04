@@ -146,7 +146,7 @@ let refusals! u = {
          :certificate_revoked],
     ];
     test.eq! (list.map (fn c -> [list.nth 2 c, true]) cases)
-             (strict! (list.map (fn [server_opts, client_opts, _] -> refused! server_opts client_opts) cases))
+             (strict! (list.map (fn! [server_opts, client_opts, _] -> refused! server_opts client_opts) cases))
 };
 
 /// The client's failure, and whether the server failed too rather than

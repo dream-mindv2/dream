@@ -19,7 +19,7 @@ let main! = {
     proc.monitor! b
     // Each callback consumes its unique down message. A JIT retry that repeats
     // the first callback waits forever for a message it already consumed.
-    console.print! (list.fold (fn acc p -> stop! acc p) 0 [a, b])
+    console.print! (list.fold (fn! acc p -> stop! acc p) 0 [a, b])
     console.print! (join! a)
     console.print! (join! b)
 };

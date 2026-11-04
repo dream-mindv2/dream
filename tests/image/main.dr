@@ -56,9 +56,9 @@ let main! = {
 
     // One image, called from many processes at once: each call is its own
     // scheduler, and the session lets one run at a time.
-    let workers = list.map (fn side -> spawn! $( shapes.area [:square, side] ))
+    let workers = list.map (fn! side -> spawn! $( shapes.area [:square, side] ))
                            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
-    console.print! (to_string (list.map (fn w -> join! w) workers))
+    console.print! (to_string (list.map (fn! w -> join! w) workers))
 
     console.print! (to_string (list.map (fn r -> match r { Result.ok(_) => :ok, other => other })
                                         [image.locate! (image.file "shapes.dream"),

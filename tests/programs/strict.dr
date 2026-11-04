@@ -15,14 +15,14 @@ let counter! () = {
 
 let main! = {
     // Forced deeply, so every `spawn!` has run by the time this returns.
-    let ps = strict! (list.map (fn n -> spawn! $( counter! () )) (list.range 0 4));
+    let ps = strict! (list.map (fn! n -> spawn! $( counter! () )) (list.range 0 4));
     console.print! ("spawned:  " + to_string (list.length ps))
 
     // All four are already waiting on a message, which they could not be if
     // the spawns were still thunks.
-    let sent = strict! (list.map (fn p -> send! p 21) ps);
+    let sent = strict! (list.map (fn! p -> send! p 21) ps);
     console.print! ("sent:     " + to_string (list.length sent))
-    console.print! ("replies:  " + to_string (list.map (fn p -> join! p) ps))
+    console.print! ("replies:  " + to_string (list.map (fn! p -> join! p) ps))
 
     // It hands back what it forced, so it composes in an expression.
     console.print! ("returns:  " + to_string (strict! [1, [2, [3]]]))

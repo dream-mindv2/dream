@@ -19,7 +19,7 @@ let main! = {
     console.print! :after_all;
     let ignored_alias = every! visit! [1, 2];
     console.print! :after_alias;
-    let ignored_inline = list.all! (fn x -> { console.print! x; x < 2 }) [1, 2, 3];
+    let ignored_inline = list.all! (fn! x -> { console.print! x; x < 2 }) [1, 2, 3];
     console.print! :after_inline;
 
     // Inlining a wrapper must preserve the sequencing on its call.

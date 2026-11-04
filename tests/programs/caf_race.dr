@@ -20,8 +20,8 @@ let work! i = {
 };
 
 let main! = {
-    let ps = list.forced (list.map (fn i -> spawn! $( work! i )) (list.range 0 64));
-    let answers = list.map (fn p -> join! p) ps;
+    let ps = list.forced (list.map (fn! i -> spawn! $( work! i )) (list.range 0 64));
+    let answers = list.map (fn! p -> join! p) ps;
     console.print! (list.length (list.unique answers))
     console.print! (list.head answers)
     console.print! (list.take 5 odds)

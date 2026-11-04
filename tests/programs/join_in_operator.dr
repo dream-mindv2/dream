@@ -20,8 +20,8 @@ let show! label v = { console.print! (to_string label + (to_string v)) };
 
 /// Hands back a list whose cells are still `join!`s: lazy, and impure.
 let pending! xs = {
-    let running = strict! (list.map (fn x -> spawn! $( strict! (x * 2) )) xs);
-    list.map (fn p -> join! p) running
+    let running = strict! (list.map (fn! x -> spawn! $( strict! (x * 2) )) xs);
+    list.map (fn! p -> join! p) running
 };
 
 let main! = {

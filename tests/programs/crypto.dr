@@ -125,7 +125,7 @@ let main! = {
     let path = "/tmp/dream-crypto-" + file.scratch_suffix! ();
     let million = str.repeat 1000000 "a";
     file.write! path million
-    show! (to_string (list.map (fn alg -> crypto.digest_file! alg path == crypto.digest alg million) hashes))
+    show! (to_string (list.map (fn! alg -> crypto.digest_file! alg path == crypto.digest alg million) hashes))
     show! (to_string [try! { crypto.digest_file! :md5 (path + ".none") } catch e { error.kind e },
                       try! { crypto.digest_file! :md5 "/tmp" } catch e { error.kind e }])
     file.remove_all! path

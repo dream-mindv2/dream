@@ -35,8 +35,8 @@ let lazy_pair n = [n, list.sum (list.range 0 n)];
 
 let main! = {
     // A top-level value read from many processes at once, and from this one after.
-    let ps = list.forced (list.map (fn i -> spawn! $( total + i )) (list.range 0 8));
-    console.print! (list.map (fn p -> join! p) ps)
+    let ps = list.forced (list.map (fn! i -> spawn! $( total + i )) (list.range 0 8));
+    console.print! (list.map (fn! p -> join! p) ps)
     console.print! total
     console.print! (join! (spawn! $( list.take 5 (list.drop 10 naturals) )))
     console.print! (list.take 3 (list.drop 12 naturals))
@@ -87,10 +87,10 @@ let main! = {
     console.print! slow
 
     // Many processes, each made to collect, while messages wait for them.
-    let workers = list.forced (list.map (fn i -> spawn! $( {
+    let workers = list.forced (list.map (fn! i -> spawn! $( {
         let got = recv! ();
         list.sum (list.map (fn j -> j + got) (list.range 0 20000))
     } )) (list.range 0 20));
-    list.each! (fn w -> send! w 1) workers
-    console.print! (list.sum (list.map (fn w -> join! w) workers))
+    list.each! (fn! w -> send! w 1) workers
+    console.print! (list.sum (list.map (fn! w -> join! w) workers))
 };

@@ -26,7 +26,7 @@ let main! = {
     console.print! (strict! (drain! 2))
 
     let c = spawn! $( counter! 0 );
-    strict! (list.map (fn k -> send! c [:add, k]) (list.range 1 2001))
+    strict! (list.map (fn! k -> send! c [:add, k]) (list.range 1 2001))
     send! c [:get, me]
     console.print! (receive! { [:total, t] => t, after 5000 => :no_answer })
     send! c :stop

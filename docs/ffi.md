@@ -200,7 +200,7 @@ most own things that must be let go. Both are what a process is for here:
 
 ```dream
 let db_server = foreign.start! ();
-let db = foreign.run! db_server (fn () -> {
+let db = foreign.run! db_server (fn! () -> {
     let [status, db] = sqlite.open! "notes.db";
     sqlite.exec! db "create table t (x)"
     db
@@ -226,7 +226,7 @@ server that has been restarted raises rather than reaching freed memory.
 place serves both uses:
 
 ```dream
-let open_db! place path = foreign.run! place (fn () -> sqlite.open! path);
+let open_db! place path = foreign.run! place (fn! () -> sqlite.open! path);
 
 open_db! foreign.here "a.db"      // in this process
 open_db! db_server "b.db"         // in the library's

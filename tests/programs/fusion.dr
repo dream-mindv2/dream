@@ -75,7 +75,7 @@ let stays_lazy = list.fold_lazy (fn acc x -> if x == 2 { 7 } else { acc / 0 }) 1
 // A fold that performs an effect is not fused, because a fused loop is a
 // global whose name is pure and the machine would stop sequencing it. The
 // order these print in is what says so.
-let counted! () = list.fold_strict (fn acc x -> { console.print! ("saw " + to_string x); acc + x })
+let counted! () = list.fold_strict (fn! acc x -> { console.print! ("saw " + to_string x); acc + x })
                                 0 (list.range 1 4);
 
 // --- a stage that was given a name -------------------------------------------
@@ -131,7 +131,7 @@ let no_sink n = { let xs = list.range 1 (n + 1); list.length xs };
 // these print in is what holds that line.
 let ordered! () = {
     let counted = list.fold_strict
-                      (fn acc x -> { console.print! ("step " + to_string x); acc + x })
+                      (fn! acc x -> { console.print! ("step " + to_string x); acc + x })
                       0 (list.range 1 4);
     console.print! "after"
     counted

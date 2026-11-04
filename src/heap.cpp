@@ -3409,10 +3409,15 @@ Value copy_object(Dest& dest, Value v, CopySeen& seen) {
             // A host function is a pointer into the VM and whatever id it was
             // bound with -- both good for every process of the runtime -- so it
             // travels as itself. A foreign function sent to a library's server
-            // process is the case that needs it; it used to arrive as `()`.
+            // process is the case that needs it; it used to arrive as `()`. It
+            // is shared the same way, for a table of them every process reads
+            // (dre's, of the VM's own modules).
             if constexpr (to_shared) {
-                dest.refuse(obj_type_name(o->type));
-                return UNIT;
+                auto* src = static_cast<NativeObj*>(o);
+                Value name = copy_value(dest, src->name, seen);
+                Value out = dest.make_native(static_cast<NativeObj*>(as_obj(v)), name);
+                seen.emplace(v, out);
+                return out;
             } else {
                 auto* src = static_cast<NativeObj*>(o);
                 Value name = copy_value(dest, src->name, seen);
@@ -3848,6 +3853,16 @@ Value SharedArea::make_closure(uint32_t func, uint32_t ncaps) {
     auto* o = static_cast<ClosureObj*>(alloc(ObjType::Closure, 8 + size_t(ncaps) * sizeof(Value)));
     o->func = func;
     o->ncaps = ncaps;
+    return from_obj(o);
+}
+
+Value SharedArea::make_native(const NativeObj* src, Value name) {
+    auto* o = static_cast<NativeObj*>(alloc(ObjType::Native, sizeof(void*) + sizeof(Value) + 8 + sizeof(uint64_t)));
+    o->fn = src->fn;
+    o->name = name;
+    o->arity = src->arity;
+    o->strict_mask = src->strict_mask;
+    o->user = src->user;
     return from_obj(o);
 }
 

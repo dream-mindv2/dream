@@ -1067,6 +1067,8 @@ public:
     Value make_module(uint32_t import_index, Value name);
     Value make_closure(uint32_t func, uint32_t ncaps);
     Value make_pap(Value fn, uint32_t nargs);
+    /// A host function: what `src` is, with its name already copied in.
+    Value make_native(const NativeObj* src, Value name);
     /// What the copier calls on meeting something that cannot be shared.
     void refuse(const char* what) { if (refused_.empty()) refused_ = what; }
 

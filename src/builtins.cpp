@@ -1811,6 +1811,7 @@ NativeResult vm_stats(Process& p, Value, Value*, uint32_t) {
 /// Defined further down, next to the error helpers they need.
 NativeResult vm_eval_image(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_host_members(Process& p, Value self, Value* args, uint32_t n);
+NativeResult vm_intern_atom(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_open_image(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_call_image(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_close_image(Process& p, Value self, Value* args, uint32_t n);
@@ -1840,6 +1841,7 @@ ModuleDef make_vm_module() {
                          {"collect_shared!", 1, 0b1, vm_collect_shared},
                          {"modules!", 1, 0b1, vm_modules},
                          {"host_members", 1, 0b1, vm_host_members},
+                         {"intern_atom!", 1, 0b1, vm_intern_atom},
                          {"async_io", 1, 0b1, vm_async_io},
                          {"processes_info!", 1, 0b1, vm_process_list},
                          {"process_info!", 1, 0b1, vm_process_info},
@@ -1982,6 +1984,17 @@ NativeResult vm_host_members(Process& p, Value, Value* args, uint32_t) {
         list = p.heap().make_cons(p.heap().make_cons(name, p.heap().make_cons(arity, NIL)), list);
     }
     return NativeResult::ok(list);
+}
+
+/// `vm.intern_atom! name` -- the atom called `name`, made if there is none:
+/// what loading an image does with each name in its `KATM` table, for a loader
+/// written in Dream (dre). `to_existing_atom` will not make an atom, and that
+/// is right for text that arrived from outside, since the table only grows; an
+/// image's atoms are its program's own names, and running it means having them.
+NativeResult vm_intern_atom(Process& p, Value, Value* args, uint32_t) {
+    Bytes b;
+    if (!string_bytes(args[0], &b)) return type_fail(p, "intern_atom! needs a name");
+    return NativeResult::ok(make_atom(p.runtime().intern_atom(std::string_view(b.data, b.len))));
 }
 
 /// Bring a value across from another runtime's heap.

@@ -633,6 +633,12 @@ public:
     /// a value the image already held.
     std::vector<Value> float_cache;
 
+    /// What `vm.per_process` has answered this process, by key: a value a
+    /// program means to have one of in each process, as it has one of each
+    /// top-level value, found by whichever process is evaluating rather than
+    /// carried by what it evaluates. Usually empty; a root.
+    std::vector<std::pair<int64_t, Value>> per_process;
+
     /// The C resources this process owns through `std.ffi`: every handle it
     /// was given by a foreign call, with the destructor that lets it go. Null
     /// until the first one, so a process that never touches C pays a pointer.

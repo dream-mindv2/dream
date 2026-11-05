@@ -1462,6 +1462,39 @@ NativeResult vm_unique(Process& p, Value, Value*, uint32_t) {
     return NativeResult::ok(make_integer(p, next.fetch_add(1, std::memory_order_relaxed)));
 }
 
+/// `vm.per_process key init` -- this process's value of `key`: `init`, as it
+/// stands, the first time the process asks, and that same value every time
+/// after. What a top-level value is to the VM, for a program that keeps values
+/// of its own: one for each process, found by the process evaluating, so that
+/// a suspension carried into another process reads that process's and not the
+/// one it was made in -- nor brings a copy of it along. Pure to anyone who
+/// gives a key the same `init` everywhere, which is the bargain.
+NativeResult vm_per_process(Process& p, Value, Value* args, uint32_t) {
+    NativeResult err;
+    int64_t key;
+    if (!int_arg(p, args[0], "per_process", &key, &err)) return err;
+    for (auto& kept : p.per_process) {
+        if (kept.first == key) return NativeResult::enter(kept.second);
+    }
+    p.per_process.emplace_back(key, args[1]);
+    return NativeResult::enter(args[1]);
+}
+
+/// `vm.raised_at e places` -- `e`, carrying `places` as where it was raised:
+/// innermost first, each `[:in or :made, name, path, line, col]` as
+/// `error.trace!` answers them. The machine writes where an error was raised
+/// from the functions it is running, and a program that runs another's code --
+/// dre, an image's -- is the one that knows where in that code it was; a raise
+/// that finds the places already there keeps them, as it keeps its own. A copy,
+/// since an error is a value; anything else is answered as it is.
+NativeResult vm_raised_at(Process& p, Value, Value* args, uint32_t) {
+    if (!is_obj(resolve(args[0]), ObjType::ErrorBox)) return NativeResult::ok(resolve(args[0]));
+    Pin e(p, resolve(args[0]));
+    Pin places(p, args[1]);
+    auto* from = static_cast<ErrorObj*>(as_obj(e.get()));
+    return NativeResult::ok(p.heap().make_error(from->kind, from->payload, places.get()));
+}
+
 /// `_deadline_in! ms` -- `vm.now_ns!` `ms` milliseconds from now: the deadline
 /// `receive! { .., after ms => .. }` waits until.
 NativeResult vm_deadline_in(Process& p, Value, Value* args, uint32_t) {
@@ -1850,6 +1883,8 @@ ModuleDef make_vm_module() {
                          {"monitor!", 1, 0b1, vm_monitor},
                          {"demonitor!", 1, 0b1, vm_demonitor},
                          {"unique!", 1, 0b1, vm_unique},
+                         {"per_process", 2, 0b01, vm_per_process},
+                         {"raised_at", 2, 0b11, vm_raised_at},
                          {"mailbox_size!", 1, 0b1, vm_mailbox_size},
                          {"mailbox_peek!", 1, 0b1, vm_mailbox_peek},
                          {"mailbox_take!", 1, 0b1, vm_mailbox_take},

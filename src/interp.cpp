@@ -3079,6 +3079,27 @@ std::vector<TracePlace> error_trace(Process& p, Value err) {
     for (Value cur = resolve(static_cast<ErrorObj*>(as_obj(v))->where);
          is_obj(cur, ObjType::Cons); cur = resolve(static_cast<ConsObj*>(as_obj(cur))->tail)) {
         Value entry = resolve(static_cast<ConsObj*>(as_obj(cur))->head);
+        // A place written out, `[:in or :made, name, path, line, col]`, as
+        // `vm.raised_at` puts one: where in code the program itself runs --
+        // dre's image -- rather than in this image's functions.
+        if (is_obj(entry, ObjType::Cons)) {
+            Value parts[5];
+            Value at = entry;
+            size_t k = 0;
+            for (; k < 5 && is_obj(at, ObjType::Cons); ++k) {
+                parts[k] = resolve(static_cast<ConsObj*>(as_obj(at))->head);
+                at = resolve(static_cast<ConsObj*>(as_obj(at))->tail);
+            }
+            Bytes name, path;
+            if (k < 5 || !is_atom(parts[0]) || !string_bytes(parts[1], &name) ||
+                !string_bytes(parts[2], &path) || !is_fixnum(parts[3]) || !is_fixnum(parts[4])) {
+                break;
+            }
+            const bool made = parts[0] == make_atom(p.runtime().intern_atom("made"));
+            out.push_back(TracePlace{made, std::string(name.data, name.len), std::string(path.data, path.len),
+                                     uint32_t(fixnum_value(parts[3])), uint32_t(fixnum_value(parts[4]))});
+            continue;
+        }
         if (!is_fixnum(entry)) break;
         int64_t n = fixnum_value(entry);
         bool made = n < 0;

@@ -311,6 +311,7 @@ void Process::shed() {
     std::vector<Value>().swap(native_cache);
     std::vector<Value>().swap(string_cache);
     std::vector<Value>().swap(float_cache);
+    std::vector<std::pair<int64_t, Value>>().swap(per_process);
     heap_.major_collect(*this);
     heap_.release_pooled();
     if (keeps) {
@@ -441,6 +442,7 @@ void Process::visit_roots(Heap& heap) {
     for (Value& v : float_cache) {
         if (v != NIL_SLOT) heap.forward(&v);
     }
+    for (auto& kept : per_process) heap.forward(&kept.second);
 }
 
 Value Process::make_error_value(const char* kind, const char* message) {

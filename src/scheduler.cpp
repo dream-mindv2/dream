@@ -504,6 +504,10 @@ void Scheduler::finish(const std::shared_ptr<Process>& p) {
     // Before anyone can be told the process is done: a joiner that goes on to
     // look at what the C side holds must find its resources already let go.
     release_foreign(*p);
+    // And made as small as its answer, while nobody can be copying out of it.
+    // Not the root: its answer is forced where it lies by whoever started the
+    // run (`run_compile_time`), and a session runs it again (`vm.call_image!`).
+    if (p->id() != root_id_.load()) p->shed();
     std::vector<uint64_t> waiters;
     std::vector<uint64_t> monitors;
     bool had_waiters = false;

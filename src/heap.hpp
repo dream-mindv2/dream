@@ -485,6 +485,15 @@ public:
     /// for spawning, which are the only two places a value crosses heaps.
     static Value copy_between(Heap& dest, Value v);
 
+    /// The dead big blocks kept for reuse, given back to the system: for a heap
+    /// that will not allocate again (`Process::shed`).
+    void release_pooled();
+
+    /// The size of the blocks made from here on, however little is asked of
+    /// each: for a heap about to be given one value it will then only be read
+    /// from (`Process::shed`), so that it takes one block of that value's size.
+    void size_blocks(size_t bytes) { initial_bytes_ = bytes < 64 ? 64 : bytes; }
+
     /// Walk everything reachable from `roots` and check the object graph holds
     /// together: every pointer lands on an object this heap owns, every header
     /// is plausible, and no object straddles the end of its block. Returns an

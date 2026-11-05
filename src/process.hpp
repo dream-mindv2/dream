@@ -146,6 +146,12 @@ public:
 
     void pop_back() { --size_; }
     void clear() { size_ = 0; }
+    /// Empty, and the memory given back: for a process that is done.
+    void release() {
+        std::free(data_);
+        data_ = nullptr;
+        size_ = cap_ = 0;
+    }
     Cont& back() { return data_[size_ - 1]; }
     const Cont& back() const { return data_[size_ - 1]; }
     size_t size() const { return size_; }
@@ -268,6 +274,8 @@ public:
     }
     /// Everything at once, for a process that is done.
     void clear();
+    /// `clear`, and the chunks given back, for a process that will not run again.
+    void release();
 
 private:
     void release_from(uint32_t depth);
@@ -696,6 +704,11 @@ public:
     /// Collect if the heap has grown past its threshold. Only legal at a
     /// safepoint, where every live value is reachable from the stacks.
     void maybe_collect();
+
+    /// A process that has ended, made as small as what it answered: everything
+    /// but `result` let go and the heap collected around it. See the comment
+    /// at the definition for why it matters and when it may run.
+    void shed();
     /// `maybe_collect` underneath compiled code, with the machine stack as
     /// roots. See `jit_stack_hi`.
     void collect_under_compiled();

@@ -212,6 +212,14 @@ void Heap::retire_big(Block* b) {
     std::free(b);
 }
 
+void Heap::release_pooled() {
+    for (auto& [size, same] : big_pool_) {
+        for (PooledBlock& pb : same) std::free(pb.data);
+    }
+    big_pool_.clear();
+    big_pool_bytes_ = 0;
+}
+
 void Heap::trim_big_pool() {
     const size_t cap = std::max(kBigPoolFloor, live_after_gc_);
     for (auto it = big_pool_.begin(); it != big_pool_.end();) {

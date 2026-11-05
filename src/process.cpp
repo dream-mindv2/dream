@@ -137,6 +137,19 @@ void FrameStack::grow() {
     cap_ = want;
 }
 
+void FrameStack::release() {
+    std::free(frames_);
+    frames_ = nullptr;
+    cap_ = 0;
+    for (Chunk& c : chunks_) std::free(c.base);
+    chunks_.clear();
+    chunks_.shrink_to_fit();
+    top_ = end_ = nullptr;
+    size_ = floor_ = 0;
+    release_at_ = 0;
+    chunk_ = 0;
+}
+
 void FrameStack::clear() {
     size_ = 0;
     floor_ = 0;
@@ -260,6 +273,52 @@ uintptr_t Process::compiled_stack_floor() const {
         floor = std::max(floor, top > budget ? top - budget : top);
     }
     return floor;
+}
+
+/// A finished process stays in the runtime's table for as long as the run
+/// lasts, since a `join!` may come for it at any time and nothing yet says
+/// that none will. What a join reads is `exit_value` and nothing else, but the
+/// process went on holding its heap as it was when it ended, its stacks, and
+/// its caches -- tens of kilobytes each, so a program that runs a hundred
+/// thousand short processes ended up holding gigabytes of what nothing could
+/// read again (dream/tests/programs/census.dr, 1.8 GB). So, once it is done and
+/// before anyone may be told so -- a joiner copies out of this heap, and must
+/// not meet a collection moving what it copies -- it is made as small as its
+/// answer: the stacks and caches given back, and the heap emptied and given
+/// the answer again, in one block of the answer's size.
+///
+/// Collected around the answer in place, the heap kept every block a live
+/// object of the answer was in -- one of 64 KB at least, for a list of twenty
+/// numbers, because a collection here does not move what is old. Copied into
+/// a `Heap` of its own, it paid two kilobytes for the `Heap` and a block per
+/// few objects. Hence the copy out and back, which costs a copy of the answer
+/// twice; a join costs one already.
+void Process::shed() {
+    if (heap_.marking()) heap_.finalize_concurrent_mark(*this);
+    Heap held(4096);
+    const bool keeps = is_ptr(result);
+    Value answer = keeps ? Heap::copy_between(held, result) : result;
+    frame = UNIT;
+    result = UNIT;
+    exit_value = UNIT;
+    stack.clear();
+    stack.shrink_to_fit();
+    pins.clear();
+    pins.shrink_to_fit();
+    conts.release();
+    frames.release();
+    std::vector<Value>().swap(globals);
+    std::vector<Value>().swap(native_cache);
+    std::vector<Value>().swap(string_cache);
+    std::vector<Value>().swap(float_cache);
+    heap_.major_collect(*this);
+    heap_.release_pooled();
+    if (keeps) {
+        heap_.size_blocks(held.bytes_allocated());
+        answer = Heap::copy_between(heap_, answer);
+    }
+    result = answer;
+    exit_value = answer;
 }
 
 void Process::maybe_collect() {

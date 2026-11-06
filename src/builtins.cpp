@@ -1859,6 +1859,7 @@ NativeResult vm_node_section(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_index_section(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_wire_decode(Process& p, Value self, Value* args, uint32_t n);
 NativeResult vm_llvm_object(Process& p, Value self, Value* args, uint32_t n);
+NativeResult vm_llvm_objects(Process& p, Value self, Value* args, uint32_t n);
 }  // namespace
 
 ModuleDef make_vm_module() {
@@ -1905,6 +1906,7 @@ ModuleDef make_vm_module() {
                          {"image_digest", 1, 0b1, vm_image_digest},
                          // The AOT compiler's code generator; dream/src/aot_object.cpp.
                          {"llvm_object!", 2, 0b11, vm_llvm_object},
+                         {"llvm_objects!", 3, 0b111, vm_llvm_objects},
                          // `std.wire`'s format, done here; see "The wire format, natively".
                          {"wire_encode", 1, 0b0, vm_wire_encode, 0, true},
                          {"wire_decode", 1, 0b1, vm_wire_decode},
@@ -6064,6 +6066,31 @@ NativeResult vm_llvm_object(Process& p, Value, Value* args, uint32_t) {
     const std::string& answer = ok ? object : error;
     Value bytes = p.heap().make_string(answer.data(), uint32_t(answer.size()));
     return NativeResult::ok(make_result(p.heap(), p.runtime(), ok, bytes));
+}
+
+/// `vm.llvm_objects! ir level units`: the same in up to `units` parts compiled at
+/// once, `Result.ok` a list of their objects (`aot_objects`).
+NativeResult vm_llvm_objects(Process& p, Value, Value* args, uint32_t) {
+    Value ir = resolve(args[0]);
+    Value level = resolve(args[1]);
+    Value units = resolve(args[2]);
+    if (!is_obj(ir, ObjType::Str) || !is_fixnum(level) || !is_fixnum(units)) {
+        return type_fail(p, "llvm_objects! needs IR as a string, an optimization level and a number of parts");
+    }
+    auto* text = static_cast<StrObj*>(as_obj(ir));
+    std::vector<std::string> objects;
+    std::string error;
+    if (!aot_objects(std::string_view(text->data(), text->len), int(fixnum_value(level)), int(fixnum_value(units)),
+                     &objects, &error)) {
+        Value why = p.heap().make_string(error.data(), uint32_t(error.size()));
+        return NativeResult::ok(make_result(p.heap(), p.runtime(), false, why));
+    }
+    Pin list(p, NIL);
+    for (size_t i = objects.size(); i > 0; --i) {
+        Value bytes = p.heap().make_string(objects[i - 1].data(), uint32_t(objects[i - 1].size()));
+        p.pins[list.at] = p.heap().make_cons(bytes, list.get());
+    }
+    return NativeResult::ok(make_result(p.heap(), p.runtime(), true, list.get()));
 }
 }  // namespace
 

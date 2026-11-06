@@ -51,6 +51,13 @@ inline const char* jit_policy_name(JitPolicy policy) {
 /// with no LLVM, which always says so.
 bool aot_object(std::string_view ir, int opt_level, std::string* object, std::string* error);
 
+/// The same in up to `units` parts, each optimized and compiled on a thread of
+/// its own, an object apiece: what a program too large for one module wants
+/// (`vm.llvm_objects!`). The objects name each other's symbols, and the AOT's
+/// linker resolves them as one.
+bool aot_objects(std::string_view ir, int opt_level, int units, std::vector<std::string>* objects,
+                 std::string* error);
+
 /// Signature of a JIT-compiled function body.
 ///
 /// `status` reports what happened: 0 the return value is a result, 1 it is an

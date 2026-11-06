@@ -12,6 +12,9 @@
 #include "jit.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <atomic>
 #include <cctype>
 #include <cstring>
@@ -301,9 +304,47 @@ void names_in(std::string_view text, std::unordered_set<std::string>* out) {
     }
 }
 
+/// `text` with every name `renames` holds replaced by what it says, outside quoted strings.
+std::string renamed(std::string_view text, const std::unordered_map<std::string, std::string>& renames) {
+    if (renames.empty()) return std::string(text);
+    std::string out;
+    out.reserve(text.size());
+    bool quoted = false;
+    for (size_t i = 0; i < text.size();) {
+        const char c = text[i];
+        if (c == '"') quoted = !quoted;
+        if (!quoted && c == '@') {
+            std::string name = name_after_at(text, i);
+            auto it = renames.find(name);
+            out += '@';
+            out += it == renames.end() ? name : it->second;
+            i += 1 + name.size();
+            continue;
+        }
+        out += c;
+        ++i;
+    }
+    return out;
+}
+
 /// The text cut into `units` parts, each standing alone.
+//
+// An alias is not written: whatever names one names what it is an alias of. The AOT writes a
+// continuation it has written before as an alias of the first (`finish` in machine.dr), and in
+// `dreams` that was 107,000 aliases of a few dozen functions, all in the part with them; LLVM's
+// GlobalOpt took three minutes over that part alone, and the rest of its work a second.
 std::vector<std::string> parts_of(std::string_view ir, int units) {
     std::vector<Top> tops = tops_of(ir);
+    std::unordered_map<std::string, std::string> renames;
+    for (const Top& t : tops) {
+        if (t.kind == Top::Alias) renames[t.name] = t.aliasee;
+    }
+    for (auto& [name, target] : renames) {
+        // An alias of an alias is one of what that one is of.
+        for (auto it = renames.find(target); it != renames.end() && it->second != target; it = renames.find(target)) {
+            target = it->second;
+        }
+    }
     std::unordered_map<std::string, size_t> defined_at;  // name -> index in tops
     for (size_t i = 0; i < tops.size(); ++i) {
         if (!tops[i].name.empty()) defined_at[tops[i].name] = i;
@@ -328,26 +369,53 @@ std::vector<std::string> parts_of(std::string_view ir, int units) {
             unit_of[i] = 0;
         }
     }
-    for (size_t i = 0; i < tops.size(); ++i) {
-        if (tops[i].kind != Top::Alias) continue;
-        auto it = defined_at.find(tops[i].aliasee);
-        unit_of[i] = it == defined_at.end() ? 0 : unit_of[it->second];
-    }
+
     std::vector<std::string> bodies(static_cast<size_t>(units));
     std::vector<std::unordered_set<std::string>> defines(static_cast<size_t>(units));
     for (size_t i = 0; i < tops.size(); ++i) {
         if (unit_of[i] < 0) continue;
         const size_t u = size_t(unit_of[i]);
-        bodies[u] += tops[i].kind == Top::Asm ? std::string(tops[i].text) : hidden(tops[i].text);
+        bodies[u] += tops[i].kind == Top::Asm ? std::string(tops[i].text) : renamed(hidden(tops[i].text), renames);
         if (!tops[i].name.empty()) defines[u].insert(tops[i].name);
     }
+    // A small function of the runtime or its library that a part calls and another defines goes
+    // in as `available_externally`, so LLVM can inline it where it is called and writes it nowhere:
+    // its tests of a kind and its constants were calls once the parts were apart, and a compile
+    // spent a sixth of its time in them, twice the time it took in one module.
+    auto inlinable = [&](const std::string& name, const Top& t) {
+        return t.kind == Top::Function && t.text.size() <= 4096 && name.size() > 1 &&
+               (name[0] == 'r' || name[0] == 'l') && std::isdigit(static_cast<unsigned char>(name[1]));
+    };
     std::vector<std::string> parts;
     for (size_t u = 0; u < size_t(units); ++u) {
         std::unordered_set<std::string> used;
         names_in(bodies[u], &used);
+        std::string copies;
+        std::vector<std::string> todo(used.begin(), used.end());
+        std::unordered_set<std::string> copied;
+        while (!todo.empty()) {
+            std::string name = std::move(todo.back());
+            todo.pop_back();
+            if (defines[u].count(name) || copied.count(name)) continue;
+            auto it = defined_at.find(name);
+            if (it == defined_at.end() || !inlinable(name, tops[it->second])) continue;
+            copied.insert(name);
+            std::string copy = renamed(hidden(tops[it->second].text), renames);
+            const size_t at = copy.find("define hidden ");
+            if (at != std::string::npos) copy.replace(at, 14, "define available_externally ");
+            std::unordered_set<std::string> more;
+            names_in(copy, &more);
+            for (const std::string& m : more) {
+                if (!used.count(m)) {
+                    used.insert(m);
+                    todo.push_back(m);
+                }
+            }
+            copies += copy;
+        }
         std::string declarations;
         for (const std::string& name : used) {
-            if (defines[u].count(name) || declared.count(name)) continue;
+            if (defines[u].count(name) || declared.count(name) || copied.count(name)) continue;
             auto it = defined_at.find(name);
             if (it == defined_at.end()) continue;  // the verifier says what is missing
             const Top& t = tops[it->second];
@@ -365,7 +433,7 @@ std::vector<std::string> parts_of(std::string_view ir, int units) {
                 declarations += "@" + name + " = external hidden global i8, align 8\n";
             }
         }
-        parts.push_back(header + declarations + bodies[u]);
+        parts.push_back(header + declarations + copies + bodies[u]);
     }
     return parts;
 }
@@ -375,19 +443,44 @@ std::vector<std::string> parts_of(std::string_view ir, int units) {
 bool aot_objects(std::string_view ir, int opt_level, int units, std::vector<std::string>* objects,
                  std::string* error) {
     objects->clear();
-    if (units <= 1) {
-        std::string object;
-        if (!aot_object(ir, opt_level, &object, error)) return false;
-        objects->push_back(std::move(object));
-        return true;
-    }
     initialize_targets();
+    if (units < 1) units = 1;
     std::vector<std::string> parts = parts_of(ir, units);
+    // `DREAMS_AOT_KEEP_PARTS=DIR`: each part's text as `DIR/part-N.ll`, for `opt` to say where a
+    // slow one spends its time.
+    if (const char* keep = std::getenv("DREAMS_AOT_KEEP_PARTS")) {
+        for (size_t i = 0; i < parts.size(); ++i) {
+            const std::string path = std::string(keep) + "/part-" + std::to_string(i) + ".ll";
+            if (FILE* f = std::fopen(path.c_str(), "wb")) {
+                std::fwrite(parts[i].data(), 1, parts[i].size(), f);
+                std::fclose(f);
+            }
+        }
+    }
     objects->assign(parts.size(), std::string());
     std::vector<std::string> errors(parts.size());
     std::atomic<size_t> next{0};
+    // `DREAMS_AOT_TRACE`: each part's size, its largest function and how long it took, for when
+    // one part is the build's critical path.
+    const bool trace = std::getenv("DREAMS_AOT_TRACE") != nullptr;
     auto work = [&] {
         for (size_t i = next++; i < parts.size(); i = next++) {
+            const auto started = std::chrono::steady_clock::now();
+            const size_t bytes = parts[i].size();
+            std::string largest;
+            size_t largest_size = 0;
+            if (trace) {
+                for (size_t at = parts[i].find("\ndefine "); at != std::string::npos; ) {
+                    const size_t end = parts[i].find("\n}\n", at);
+                    const size_t size = (end == std::string::npos ? parts[i].size() : end) - at;
+                    if (size > largest_size) {
+                        largest_size = size;
+                        const size_t name = parts[i].find('@', at);
+                        largest = parts[i].substr(name, parts[i].find('(', name) - name);
+                    }
+                    at = end == std::string::npos ? end : parts[i].find("\ndefine ", end);
+                }
+            }
             llvm::LLVMContext context;
             std::unique_ptr<llvm::Module> module = parsed(parts[i], context, &errors[i]);
             if (!module) {
@@ -398,6 +491,11 @@ bool aot_objects(std::string_view ir, int opt_level, int units, std::vector<std:
             std::unique_ptr<llvm::TargetMachine> machine = machine_for(*module, opt_level, &errors[i]);
             if (!machine) continue;
             compiled(*module, *machine, opt_level, &(*objects)[i], &errors[i]);
+            if (trace) {
+                const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+                std::fprintf(stderr, "aot part %zu: %zu bytes, largest %s (%zu bytes), %.1f s\n", i, bytes,
+                             largest.c_str(), largest_size, seconds);
+            }
         }
     };
     // Each thread holds a part as LLVM optimizes it, and a part of a large program is a large

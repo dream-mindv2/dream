@@ -272,6 +272,19 @@ public:
         }
         return false;
     }
+    /// Whether `v` is a frame of this stack that has not been dropped: in a
+    /// chunk before the one being filled, or below its top. What a reader
+    /// outside the machine -- the profiler -- asks before it reads a header,
+    /// since `holds` is true of a dropped frame too.
+    bool live(Value v) const {
+        if (!is_ptr(v) || !top_) return false;
+        auto* at = reinterpret_cast<const uint8_t*>(as_obj(v));
+        for (size_t i = 0; i <= chunk_ && i < chunks_.size(); ++i) {
+            const Chunk& c = chunks_[i];
+            if (at >= c.base && at < c.base + c.cap) return i < chunk_ || at < top_;
+        }
+        return false;
+    }
     /// Everything at once, for a process that is done.
     void clear();
     /// `clear`, and the chunks given back, for a process that will not run again.

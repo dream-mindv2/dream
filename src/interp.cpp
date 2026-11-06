@@ -3593,6 +3593,13 @@ inline void note_own_alloc(Process& p, uint32_t fi, uint64_t a0, uint64_t n0) {
 
 uint32_t current_func(Process& p) {
     if (!is_ptr(p.frame)) return UINT32_MAX;
+    // The frame register may still name a frame that has been dropped, whose
+    // memory is another frame's now or has been given back: a header is read
+    // only from a frame known to be one.
+    if (p.frames.holds(p.frame) ? !p.frames.live(p.frame)
+                                : !p.heap().owns(as_obj(p.frame), sizeof(FrameObj))) {
+        return UINT32_MAX;
+    }
     Value c = static_cast<FrameObj*>(as_obj(p.frame))->closure;
     if (!is_obj(c, ObjType::Closure)) return UINT32_MAX;
     return static_cast<ClosureObj*>(as_obj(c))->func;

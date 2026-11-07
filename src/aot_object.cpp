@@ -107,8 +107,13 @@ std::unique_ptr<llvm::TargetMachine> machine_for(llvm::Module& module, int opt_l
     // Static and not position-independent: the executable writer lays out a
     // fixed address space and resolves the relocations itself, and PIC would only
     // add a GOT for it to build.
+    // A section for each function and each datum, so that the executable writer can leave out
+    // what nothing reaches: every program carries the whole runtime and library, compiled once.
+    llvm::TargetOptions options;
+    options.FunctionSections = true;
+    options.DataSections = true;
     std::unique_ptr<llvm::TargetMachine> machine(target->createTargetMachine(
-        triple, "generic", "", llvm::TargetOptions(), llvm::Reloc::Static, llvm::CodeModel::Small, level));
+        triple, "generic", "", options, llvm::Reloc::Static, llvm::CodeModel::Small, level));
     if (!machine) {
         *error = "no target machine for " + triple.str();
         return nullptr;
@@ -395,10 +400,13 @@ std::vector<Part> parts_of(std::string_view ir, int units) {
     // Where each definition goes: the lightest part, an alias with what it names. The runtime's
     // section has parts of its own, as many as its size says, so that they are the same text in
     // every program; the program's go in `units`.
-    size_t cached_bytes = 0;
+    size_t cached_bytes = 0, own_bytes = 0;
     for (const Top& t : tops) {
-        if (t.cached && (t.kind == Top::Function || t.kind == Top::Datum)) cached_bytes += t.text.size();
+        if (t.kind == Top::Function || t.kind == Top::Datum) (t.cached ? cached_bytes : own_bytes) += t.text.size();
     }
+    // The parts asked for are for what the text is in all; the program's own share is what
+    // they are for, a part for each half megabyte of it, and the kept ones are counted apart.
+    units = std::max(1, std::min(units, int(1 + own_bytes / 524288)));
     const int kept = cached_bytes == 0 ? 0 : int(1 + cached_bytes / 524288);
     const int all = units + kept;
     std::vector<size_t> weight(size_t(all), 0);
@@ -519,7 +527,7 @@ std::string cache_dir() {
 /// A part's key: its text, as LLVM at this version and level would compile it.
 std::string part_key(const std::string& text, int opt_level) {
     Sha256 sha;
-    std::string salt = "dream-aot-part-1";
+    std::string salt = "dream-aot-part-2";
     salt += '\0';
     salt += LLVM_VERSION_STRING;
     salt += '\0';
@@ -557,13 +565,16 @@ void write_file(const std::string& dir, const std::string& path, const std::stri
 
 }  // namespace
 
-bool aot_objects(std::string_view ir, int opt_level, int units, std::vector<std::string>* objects,
+bool aot_objects(std::string_view ir, int opt_level, int units, std::vector<std::string>* objects, size_t* kept,
                  std::string* error) {
     objects->clear();
     initialize_targets();
     if (units < 1) units = 1;
     std::vector<Part> parts = parts_of(ir, units);
     const std::string dir = cache_dir();
+    // The kept parts come last (`parts_of`): how many, so that what links them can keep what it
+    // reads of their objects too.
+    *kept = size_t(std::count_if(parts.begin(), parts.end(), [](const Part& part) { return part.cached; }));
     // `DREAMS_AOT_KEEP_PARTS=DIR`: each part's text as `DIR/part-N.ll`, for `opt` to say where a
     // slow one spends its time.
     if (const char* keep = std::getenv("DREAMS_AOT_KEEP_PARTS")) {

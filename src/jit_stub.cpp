@@ -10,7 +10,7 @@ bool aot_object(std::string_view, int, std::string*, std::string* error) {
     return false;
 }
 
-bool aot_objects(std::string_view, int, int, std::vector<std::string>*, std::string* error) {
+bool aot_objects(std::string_view, int, int, std::vector<std::string>*, size_t*, std::string* error) {
     *error = "this VM has no LLVM, so it cannot make native code";
     return false;
 }

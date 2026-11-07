@@ -55,7 +55,7 @@ bool aot_object(std::string_view ir, int opt_level, std::string* object, std::st
 /// its own, an object apiece: what a program too large for one module wants
 /// (`vm.llvm_objects!`). The objects name each other's symbols, and the AOT's
 /// linker resolves them as one.
-bool aot_objects(std::string_view ir, int opt_level, int units, std::vector<std::string>* objects,
+bool aot_objects(std::string_view ir, int opt_level, int units, std::vector<std::string>* objects, size_t* kept,
                  std::string* error);
 
 /// Signature of a JIT-compiled function body.

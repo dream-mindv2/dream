@@ -6069,7 +6069,8 @@ NativeResult vm_llvm_object(Process& p, Value, Value* args, uint32_t) {
 }
 
 /// `vm.llvm_objects! ir level units`: the same in up to `units` parts compiled at
-/// once, `Result.ok` a list of their objects (`aot_objects`).
+/// once, `Result.ok [objects, kept]`: a list of their objects (`aot_objects`), and how many of
+/// them, at its end, are the parts the same in every program, kept between builds.
 NativeResult vm_llvm_objects(Process& p, Value, Value* args, uint32_t) {
     Value ir = resolve(args[0]);
     Value level = resolve(args[1]);
@@ -6079,9 +6080,10 @@ NativeResult vm_llvm_objects(Process& p, Value, Value* args, uint32_t) {
     }
     auto* text = static_cast<StrObj*>(as_obj(ir));
     std::vector<std::string> objects;
+    size_t kept = 0;
     std::string error;
     if (!aot_objects(std::string_view(text->data(), text->len), int(fixnum_value(level)), int(fixnum_value(units)),
-                     &objects, &error)) {
+                     &objects, &kept, &error)) {
         Value why = p.heap().make_string(error.data(), uint32_t(error.size()));
         return NativeResult::ok(make_result(p.heap(), p.runtime(), false, why));
     }
@@ -6090,7 +6092,9 @@ NativeResult vm_llvm_objects(Process& p, Value, Value* args, uint32_t) {
         Value bytes = p.heap().make_string(objects[i - 1].data(), uint32_t(objects[i - 1].size()));
         p.pins[list.at] = p.heap().make_cons(bytes, list.get());
     }
-    return NativeResult::ok(make_result(p.heap(), p.runtime(), true, list.get()));
+    Pin pair(p, p.heap().make_cons(make_fixnum(int64_t(kept)), NIL));
+    p.pins[pair.at] = p.heap().make_cons(list.get(), pair.get());
+    return NativeResult::ok(make_result(p.heap(), p.runtime(), true, pair.get()));
 }
 }  // namespace
 

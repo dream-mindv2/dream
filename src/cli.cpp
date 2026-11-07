@@ -4,6 +4,10 @@
 #endif
 // The `dream` command: load a bytecode image and run it.
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+#include <cerrno>
 #include <cctype>
 #include <cinttypes>
 #include <cstdio>
@@ -364,6 +368,27 @@ std::string skip_file(std::string& path, const std::string& MINDV2_PATH, bool* f
     return "";
 }
 
+#ifndef _WIN32
+/// Whether `path` is a native executable: it may be run, and it begins as an
+/// ELF or a 64-bit Mach-O file does. Asked positively, because an image may
+/// begin otherwise too -- `--shebang` writes `#!` before one, and run, that
+/// line hands it back to this VM, which `exec`ing it again would never end.
+bool is_native_program(const std::string& path) {
+    if (::access(path.c_str(), X_OK) != 0) return false;
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    unsigned char magic[4] = {};
+    const size_t n = std::fread(magic, 1, sizeof magic, f);
+    std::fclose(f);
+    if (n != sizeof magic) return false;
+    static const unsigned char elf[4] = {0x7f, 'E', 'L', 'F'};
+    static const unsigned char macho_le[4] = {0xcf, 0xfa, 0xed, 0xfe};
+    static const unsigned char macho_be[4] = {0xfe, 0xed, 0xfa, 0xcf};
+    return std::memcmp(magic, elf, 4) == 0 || std::memcmp(magic, macho_le, 4) == 0 ||
+           std::memcmp(magic, macho_be, 4) == 0;
+}
+#endif
+
 /// `-x name`: the installed image called `name`, and nothing else.
 ///
 /// This is the same lookup `skip_file` falls back to, without the fallback. A
@@ -564,6 +589,23 @@ int dream_main(int argc, char** argv) {
         std::fprintf(stderr, "dream: no such image `%s`\n", asked.c_str());
         return 1;
     }
+
+#ifndef _WIN32
+    // A program installed native (`mind install` builds one where it can) is an
+    // executable where its image would be, under the same name, so that `dream
+    // NAME` and `dream -x NAME` still mean it: what is found and is not an image
+    // is run as the program, with the program's arguments. The VM's own options
+    // are for an image, and a native program has none of them to take.
+    if (is_native_program(path)) {
+        std::vector<char*> args;
+        args.push_back(const_cast<char*>(path.c_str()));
+        for (std::string& a : program_args) args.push_back(a.data());
+        args.push_back(nullptr);
+        ::execv(path.c_str(), args.data());
+        std::fprintf(stderr, "dream: cannot run `%s`: %s\n", path.c_str(), std::strerror(errno));
+        return 1;
+    }
+#endif
 
     Runtime rt;
     // The runtime reports the run's cost, not this function: a program that

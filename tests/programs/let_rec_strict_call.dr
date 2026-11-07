@@ -1,0 +1,25 @@
+// A `let rec` whose value is made by a call that evaluates an argument first -- here a record
+// whose `:integer` field is strict -- while another argument is a closure of the slot being
+// bound. The closure is made before the slot has its value, and is given it when it has one.
+// The native code once lost that patch when the call's arguments were evaluated, and the
+// closure read 0: dre's `load!` is this shape, and native `dreams` crashed compiling `mind`.
+
+import std.console;
+import std.list;
+import std.vm;
+
+group P { name : :string, fs : [:any], serial : :integer }
+
+let f : P -> :integer -> :integer;
+let f p i = i + list.length (P.fs p);
+
+let load! n = {
+    let rec prog = P.make "x" (list.map (fn i -> f prog i) [1, 2, 3]) (n + list.length [vm.unique! ()]);
+    vm.share! prog
+};
+
+let main! = {
+    let prog = load! 6;
+    console.print! (P.fs prog);
+    console.print! (P.serial prog);
+};

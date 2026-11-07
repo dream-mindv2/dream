@@ -10,8 +10,13 @@
 // See dreams/docs/aot.md.
 
 #include "jit.hpp"
+#include "digest.hpp"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <unistd.h>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -39,6 +44,7 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
+#include "llvm/Config/llvm-config.h"
 
 #ifdef DREAM_AOT_CROSS
 extern "C" {
@@ -188,6 +194,13 @@ bool aot_object(std::string_view ir, int opt_level, std::string* object, std::st
 // `internal` or `private`, so that the others can name it, and each part declares what it names
 // and does not define: a function as its definition says, a datum as a byte, which is all a
 // reference to one needs.
+//
+// Parts kept. What stands between `; dream: cached` and `; dream: end cached` -- the runtime, the
+// same text for every program (`machine.to_ir`) -- goes in parts of its own, cut by its size
+// alone, which take nothing from outside it, declare in a fixed order and carry only the header
+// lines they use, so that each part is the same text in every program. Such a part, once compiled,
+// is kept in `DREAMS_AOT_CACHE` (`~/.cache/dream/aot` by default, `0` for none) under the SHA-256
+// of its text, LLVM's version and the level, and read back the next time instead.
 
 namespace {
 
@@ -196,6 +209,7 @@ struct Top {
     std::string name;  // what it defines, or empty
     enum Kind { Header, Asm, Function, Datum, Alias } kind;
     std::string aliasee;
+    bool cached = false;  // between `; dream: cached` and `; dream: end cached`
 };
 
 bool starts(std::string_view s, std::string_view p) { return s.size() >= p.size() && s.compare(0, p.size(), p) == 0; }
@@ -212,6 +226,11 @@ std::string name_after_at(std::string_view s, size_t at) {
 std::vector<Top> tops_of(std::string_view ir) {
     std::vector<Top> out;
     size_t i = 0;
+    bool cached = false;
+    auto push = [&](Top t) {
+        t.cached = cached;
+        out.push_back(std::move(t));
+    };
     while (i < ir.size()) {
         size_t eol = ir.find('\n', i);
         if (eol == std::string_view::npos) eol = ir.size();
@@ -221,26 +240,30 @@ std::vector<Top> tops_of(std::string_view ir) {
             size_t end = ir.find("\n}\n", eol);
             end = end == std::string_view::npos ? ir.size() : end + 3;
             const size_t at = line.find('@');
-            out.push_back({ir.substr(i, end - i), at == std::string_view::npos ? "" : name_after_at(line, at), Top::Function, ""});
+            push({ir.substr(i, end - i), at == std::string_view::npos ? "" : name_after_at(line, at), Top::Function, ""});
             i = end;
             continue;
         }
         const size_t next = eol < ir.size() ? eol + 1 : eol;
         std::string_view item = ir.substr(i, next - i);
-        if (line.empty() || line[0] == ';') {
+        if (line == "; dream: cached") {
+            cached = true;
+        } else if (line == "; dream: end cached") {
+            cached = false;
+        } else if (line.empty() || line[0] == ';') {
             // nothing
         } else if (starts(line, "module asm")) {
-            out.push_back({item, "", Top::Asm, ""});
+            push({item, "", Top::Asm, ""});
         } else if (line[0] == '@' && line.find(" = external ") == std::string_view::npos) {
             const std::string name = name_after_at(line, 0);
             if (line.find(" alias ") != std::string_view::npos) {
                 const size_t at = line.rfind('@');
-                out.push_back({item, name, Top::Alias, name_after_at(line, at)});
+                push({item, name, Top::Alias, name_after_at(line, at)});
             } else {
-                out.push_back({item, name, Top::Datum, ""});
+                push({item, name, Top::Datum, ""});
             }
         } else {
-            out.push_back({item, "", Top::Header, ""});
+            push({item, "", Top::Header, ""});
         }
         i = next;
     }
@@ -327,13 +350,25 @@ std::string renamed(std::string_view text, const std::unordered_map<std::string,
     return out;
 }
 
-/// The text cut into `units` parts, each standing alone.
+struct Part {
+    std::string text;
+    bool cached;  // the runtime's: the same for every program, and kept (`aot_objects`)
+};
+
+std::vector<std::string> sorted(const std::unordered_set<std::string>& names) {
+    std::vector<std::string> out(names.begin(), names.end());
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+/// The text cut into `units` parts, each standing alone, and the runtime's section into parts of
+/// its own.
 //
 // An alias is not written: whatever names one names what it is an alias of. The AOT writes a
 // continuation it has written before as an alias of the first (`finish` in machine.dr), and in
 // `dreams` that was 107,000 aliases of a few dozen functions, all in the part with them; LLVM's
 // GlobalOpt took three minutes over that part alone, and the rest of its work a second.
-std::vector<std::string> parts_of(std::string_view ir, int units) {
+std::vector<Part> parts_of(std::string_view ir, int units) {
     std::vector<Top> tops = tops_of(ir);
     std::unordered_map<std::string, std::string> renames;
     for (const Top& t : tops) {
@@ -357,12 +392,22 @@ std::vector<std::string> parts_of(std::string_view ir, int units) {
             names_in(t.text, &declared);
         }
     }
-    // Where each definition goes: the lightest part, an alias with what it names.
-    std::vector<size_t> weight(size_t(units), 0);
+    // Where each definition goes: the lightest part, an alias with what it names. The runtime's
+    // section has parts of its own, as many as its size says, so that they are the same text in
+    // every program; the program's go in `units`.
+    size_t cached_bytes = 0;
+    for (const Top& t : tops) {
+        if (t.cached && (t.kind == Top::Function || t.kind == Top::Datum)) cached_bytes += t.text.size();
+    }
+    const int kept = cached_bytes == 0 ? 0 : int(1 + cached_bytes / 524288);
+    const int all = units + kept;
+    std::vector<size_t> weight(size_t(all), 0);
     std::vector<int> unit_of(tops.size(), -1);
     for (size_t i = 0; i < tops.size(); ++i) {
         if (tops[i].kind == Top::Function || tops[i].kind == Top::Datum) {
-            const size_t u = size_t(std::min_element(weight.begin(), weight.end()) - weight.begin());
+            auto from = weight.begin() + (tops[i].cached ? units : 0);
+            auto to = tops[i].cached ? weight.end() : weight.begin() + units;
+            const size_t u = size_t(std::min_element(from, to) - weight.begin());
             unit_of[i] = int(u);
             weight[u] += tops[i].text.size();
         } else if (tops[i].kind == Top::Asm) {
@@ -370,8 +415,8 @@ std::vector<std::string> parts_of(std::string_view ir, int units) {
         }
     }
 
-    std::vector<std::string> bodies(static_cast<size_t>(units));
-    std::vector<std::unordered_set<std::string>> defines(static_cast<size_t>(units));
+    std::vector<std::string> bodies(static_cast<size_t>(all));
+    std::vector<std::unordered_set<std::string>> defines(static_cast<size_t>(all));
     for (size_t i = 0; i < tops.size(); ++i) {
         if (unit_of[i] < 0) continue;
         const size_t u = size_t(unit_of[i]);
@@ -386,12 +431,17 @@ std::vector<std::string> parts_of(std::string_view ir, int units) {
         return t.kind == Top::Function && t.text.size() <= 4096 && name.size() > 1 &&
                (name[0] == 'r' || name[0] == 'l') && std::isdigit(static_cast<unsigned char>(name[1]));
     };
-    std::vector<std::string> parts;
-    for (size_t u = 0; u < size_t(units); ++u) {
+    // A runtime part's text is the same in every program only if nothing about it is the
+    // program's: it copies in nothing from outside its section, its declarations and copies come
+    // in an order of their own, and of the header it has only the lines it uses.
+    std::vector<Part> parts;
+    for (size_t u = 0; u < size_t(all); ++u) {
+        const bool cached = int(u) >= units;
         std::unordered_set<std::string> used;
         names_in(bodies[u], &used);
         std::string copies;
-        std::vector<std::string> todo(used.begin(), used.end());
+        std::vector<std::string> todo = sorted(used);
+        std::reverse(todo.begin(), todo.end());
         std::unordered_set<std::string> copied;
         while (!todo.empty()) {
             std::string name = std::move(todo.back());
@@ -399,22 +449,25 @@ std::vector<std::string> parts_of(std::string_view ir, int units) {
             if (defines[u].count(name) || copied.count(name)) continue;
             auto it = defined_at.find(name);
             if (it == defined_at.end() || !inlinable(name, tops[it->second])) continue;
+            if (cached && !tops[it->second].cached) continue;
             copied.insert(name);
             std::string copy = renamed(hidden(tops[it->second].text), renames);
             const size_t at = copy.find("define hidden ");
             if (at != std::string::npos) copy.replace(at, 14, "define available_externally ");
             std::unordered_set<std::string> more;
             names_in(copy, &more);
-            for (const std::string& m : more) {
+            std::vector<std::string> fresh;
+            for (const std::string& m : sorted(more)) {
                 if (!used.count(m)) {
                     used.insert(m);
-                    todo.push_back(m);
+                    fresh.push_back(m);
                 }
             }
+            for (auto f = fresh.rbegin(); f != fresh.rend(); ++f) todo.push_back(*f);
             copies += copy;
         }
         std::string declarations;
-        for (const std::string& name : used) {
+        for (const std::string& name : sorted(used)) {
             if (defines[u].count(name) || declared.count(name) || copied.count(name)) continue;
             auto it = defined_at.find(name);
             if (it == defined_at.end()) continue;  // the verifier says what is missing
@@ -433,9 +486,73 @@ std::vector<std::string> parts_of(std::string_view ir, int units) {
                 declarations += "@" + name + " = external hidden global i8, align 8\n";
             }
         }
-        parts.push_back(header + declarations + copies + bodies[u]);
+        std::string head = header;
+        if (cached) {
+            // Only the header's lines this part names, and those naming nothing.
+            head.clear();
+            for (const Top& t : tops) {
+                if (t.kind != Top::Header) continue;
+                std::unordered_set<std::string> names;
+                names_in(t.text, &names);
+                bool needed = names.empty();
+                for (const std::string& n : names) needed = needed || used.count(n);
+                if (needed) head += std::string(t.text);
+            }
+        }
+        parts.push_back({head + declarations + copies + bodies[u], cached});
     }
     return parts;
+}
+
+/// Where compiled runtime parts are kept: `DREAMS_AOT_CACHE`, which is off when empty or `0`,
+/// or `$XDG_CACHE_HOME/dream/aot`, or `~/.cache/dream/aot`.
+std::string cache_dir() {
+    if (const char* set = std::getenv("DREAMS_AOT_CACHE")) {
+        const std::string dir(set);
+        return dir == "0" ? "" : dir;
+    }
+    if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) return std::string(xdg) + "/dream/aot";
+    if (const char* home = std::getenv("HOME"); home && *home) return std::string(home) + "/.cache/dream/aot";
+    return "";
+}
+
+/// A part's key: its text, as LLVM at this version and level would compile it.
+std::string part_key(const std::string& text, int opt_level) {
+    Sha256 sha;
+    std::string salt = "dream-aot-part-1";
+    salt += '\0';
+    salt += LLVM_VERSION_STRING;
+    salt += '\0';
+    salt += std::to_string(opt_level);
+    salt += '\0';
+    sha.update(reinterpret_cast<const uint8_t*>(salt.data()), salt.size());
+    sha.update(reinterpret_cast<const uint8_t*>(text.data()), text.size());
+    return sha.hex();
+}
+
+bool read_file(const std::string& path, std::string* out) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::ostringstream all;
+    all << in.rdbuf();
+    *out = all.str();
+    return !out->empty();
+}
+
+/// `bytes` at `path`, written beside it first and moved there, so that a reader never sees half.
+void write_file(const std::string& dir, const std::string& path, const std::string& bytes) {
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    const std::string tmp = path + ".tmp" + std::to_string(::getpid()) + "-" +
+                            std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    {
+        std::ofstream out(tmp, std::ios::binary);
+        if (!out) return;
+        out.write(bytes.data(), std::streamsize(bytes.size()));
+        if (!out) return;
+    }
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) std::filesystem::remove(tmp, ec);
 }
 
 }  // namespace
@@ -445,14 +562,15 @@ bool aot_objects(std::string_view ir, int opt_level, int units, std::vector<std:
     objects->clear();
     initialize_targets();
     if (units < 1) units = 1;
-    std::vector<std::string> parts = parts_of(ir, units);
+    std::vector<Part> parts = parts_of(ir, units);
+    const std::string dir = cache_dir();
     // `DREAMS_AOT_KEEP_PARTS=DIR`: each part's text as `DIR/part-N.ll`, for `opt` to say where a
     // slow one spends its time.
     if (const char* keep = std::getenv("DREAMS_AOT_KEEP_PARTS")) {
         for (size_t i = 0; i < parts.size(); ++i) {
             const std::string path = std::string(keep) + "/part-" + std::to_string(i) + ".ll";
             if (FILE* f = std::fopen(path.c_str(), "wb")) {
-                std::fwrite(parts[i].data(), 1, parts[i].size(), f);
+                std::fwrite(parts[i].text.data(), 1, parts[i].text.size(), f);
                 std::fclose(f);
             }
         }
@@ -466,31 +584,43 @@ bool aot_objects(std::string_view ir, int opt_level, int units, std::vector<std:
     auto work = [&] {
         for (size_t i = next++; i < parts.size(); i = next++) {
             const auto started = std::chrono::steady_clock::now();
-            const size_t bytes = parts[i].size();
+            const std::string& text = parts[i].text;
+            const size_t bytes = text.size();
+            // A runtime part compiled before is read back: the same text, level and LLVM made it.
+            std::string path;
+            if (parts[i].cached && !dir.empty()) {
+                path = dir + "/" + part_key(text, opt_level) + ".o";
+                if (read_file(path, &(*objects)[i])) {
+                    if (trace) std::fprintf(stderr, "aot part %zu: %zu bytes, kept\n", i, bytes);
+                    continue;
+                }
+            }
             std::string largest;
             size_t largest_size = 0;
             if (trace) {
-                for (size_t at = parts[i].find("\ndefine "); at != std::string::npos; ) {
-                    const size_t end = parts[i].find("\n}\n", at);
-                    const size_t size = (end == std::string::npos ? parts[i].size() : end) - at;
+                for (size_t at = text.find("\ndefine "); at != std::string::npos; ) {
+                    const size_t end = text.find("\n}\n", at);
+                    const size_t size = (end == std::string::npos ? text.size() : end) - at;
                     if (size > largest_size) {
                         largest_size = size;
-                        const size_t name = parts[i].find('@', at);
-                        largest = parts[i].substr(name, parts[i].find('(', name) - name);
+                        const size_t name = text.find('@', at);
+                        largest = text.substr(name, text.find('(', name) - name);
                     }
-                    at = end == std::string::npos ? end : parts[i].find("\ndefine ", end);
+                    at = end == std::string::npos ? end : text.find("\ndefine ", end);
                 }
             }
             llvm::LLVMContext context;
-            std::unique_ptr<llvm::Module> module = parsed(parts[i], context, &errors[i]);
+            std::unique_ptr<llvm::Module> module = parsed(text, context, &errors[i]);
             if (!module) {
                 errors[i] = "part " + std::to_string(i) + ", " + errors[i];
                 continue;
             }
-            std::string().swap(parts[i]);
             std::unique_ptr<llvm::TargetMachine> machine = machine_for(*module, opt_level, &errors[i]);
             if (!machine) continue;
-            compiled(*module, *machine, opt_level, &(*objects)[i], &errors[i]);
+            if (compiled(*module, *machine, opt_level, &(*objects)[i], &errors[i]) && !path.empty()) {
+                write_file(dir, path, (*objects)[i]);
+            }
+            std::string().swap(parts[i].text);
             if (trace) {
                 const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
                 std::fprintf(stderr, "aot part %zu: %zu bytes, largest %s (%zu bytes), %.1f s\n", i, bytes,

@@ -1,0 +1,19 @@
+// A map threaded through a loop is written in place natively (dreams/src/aot/core.dr, "Linear
+// accumulators"), and what anyone else holds must read as it was: the map handed in, what an
+// earlier run answered and handed to a later one, and a later run of the same loop from it.
+import std.console;
+import std.map;
+
+let fill !m !i !n = if i == n { m } else { fill (m.[i % 97 => i]) (i + 1) n };
+
+let total m = map.fold (fn acc _ v -> acc + v) 0 m;
+
+let main! = {
+    let base = %{1 => 100, 500 => 5};
+    let first = fill base 0 1000;
+    let second = fill first 1000 3000;
+    let kept = fill first 0 10;
+    console.print! [map.size base, base.[1], base.[500], map.size first, total first]
+    console.print! [map.size second, total second, total first, first.[3], second.[3]]
+    console.print! [map.size kept, kept.[3], first.[3]]
+};

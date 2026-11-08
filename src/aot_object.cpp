@@ -112,8 +112,13 @@ std::unique_ptr<llvm::TargetMachine> machine_for(llvm::Module& module, int opt_l
     llvm::TargetOptions options;
     options.FunctionSections = true;
     options.DataSections = true;
+    // x86-64-v2 rather than the first x86-64: POPCNT, SSE4.2 and CMPXCHG16B, which every x86-64
+    // made since 2009 has, and which the platforms the toolchain is built for require already
+    // (AlmaLinux 9). A map's slot is a popcount of its bitmap, and on the first x86-64 that was
+    // a dozen instructions on every step down a map.
+    const char* cpu = triple.getArch() == llvm::Triple::x86_64 ? "x86-64-v2" : "generic";
     std::unique_ptr<llvm::TargetMachine> machine(target->createTargetMachine(
-        triple, "generic", "", options, llvm::Reloc::Static, llvm::CodeModel::Small, level));
+        triple, cpu, "", options, llvm::Reloc::Static, llvm::CodeModel::Small, level));
     if (!machine) {
         *error = "no target machine for " + triple.str();
         return nullptr;
@@ -527,7 +532,7 @@ std::string cache_dir() {
 /// A part's key: its text, as LLVM at this version and level would compile it.
 std::string part_key(const std::string& text, int opt_level) {
     Sha256 sha;
-    std::string salt = "dream-aot-part-2";
+    std::string salt = "dream-aot-part-3";
     salt += '\0';
     salt += LLVM_VERSION_STRING;
     salt += '\0';

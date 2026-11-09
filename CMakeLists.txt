@@ -1383,3 +1383,62 @@ install(
 install(
   DIRECTORY include/
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+# ---------------------------------------------------------------------------
+# LLVM for a native compiler
+# ---------------------------------------------------------------------------
+#
+# A `dreams` built native has no VM whose LLVM it can ask for objects, and reaches one through
+# `std.llvm` -- the C API, by `std.ffi` -- from a shared library it finds the way any system
+# library is found, the installation's `lib` first. The VM above keeps every LLVM symbol to
+# itself (`--exclude-libs`), so a release carries LLVM a second time, as this: the same static
+# archives the JIT is linked from, which therefore read the IR this VM's AOT writes, pulled in by
+# the C functions `std.llvm` names and nothing more, with only those exported, and with nothing
+# needed at run time but the C library, as the VM itself. Where LLVM is a shared library already
+# (a distribution's, Nix's), that library is the one `std.llvm` finds, and this is not built.
+#
+# The list is `std.llvm`'s (mind/std/src/llvm.dr): a function added there is added here.
+if(DREAM_HAVE_LLVM AND DREAM_LLVM_STATIC AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
+  set(DREAM_LLVM_C_API
+      LLVMContextCreate LLVMContextDispose LLVMCreateMemoryBufferWithMemoryRangeCopy
+      LLVMDisposeMemoryBuffer LLVMGetBufferStart LLVMGetBufferSize LLVMParseIRInContext
+      LLVMVerifyModule LLVMDisposeModule LLVMGetTarget LLVMGetTargetFromTriple
+      LLVMCreateTargetMachine LLVMDisposeTargetMachine LLVMCreateTargetDataLayout
+      LLVMSetModuleDataLayout LLVMDisposeTargetData LLVMCreatePassBuilderOptions
+      LLVMDisposePassBuilderOptions LLVMRunPasses LLVMGetErrorMessage
+      LLVMTargetMachineEmitToMemoryBuffer LLVMDisposeMessage LLVMGetVersion)
+  set(DREAM_LLVM_TARGETS)
+  if(DREAM_AOT_CROSS OR CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+    list(APPEND DREAM_LLVM_TARGETS X86)
+  endif()
+  if(DREAM_AOT_CROSS OR CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+    list(APPEND DREAM_LLVM_TARGETS AArch64)
+  endif()
+  foreach(t IN LISTS DREAM_LLVM_TARGETS)
+    list(APPEND DREAM_LLVM_C_API LLVMInitialize${t}TargetInfo LLVMInitialize${t}Target
+         LLVMInitialize${t}TargetMC LLVMInitialize${t}AsmPrinter LLVMInitialize${t}AsmParser)
+  endforeach()
+
+  set(DREAM_LLVM_EXPORTS "${CMAKE_CURRENT_BINARY_DIR}/dream_llvm.map")
+  set(DREAM_LLVM_EXPORT_LINES "")
+  foreach(symbol IN LISTS DREAM_LLVM_C_API)
+    string(APPEND DREAM_LLVM_EXPORT_LINES "    ${symbol};\n")
+  endforeach()
+  file(WRITE "${DREAM_LLVM_EXPORTS}" "{\n  global:\n${DREAM_LLVM_EXPORT_LINES}  local: *;\n};\n")
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/dream_llvm.c" "/* LLVM's C API, as std.llvm uses it: see CMakeLists.txt. */\n")
+
+  add_library(dream_llvm SHARED "${CMAKE_CURRENT_BINARY_DIR}/dream_llvm.c")
+  target_link_directories(dream_llvm PRIVATE ${DREAM_LLVM_LIBDIR})
+  foreach(symbol IN LISTS DREAM_LLVM_C_API)
+    target_link_options(dream_llvm PRIVATE "-Wl,--undefined=${symbol}")
+  endforeach()
+  target_link_options(dream_llvm PRIVATE "-Wl,--version-script=${DREAM_LLVM_EXPORTS}" "-Wl,--as-needed"
+                      "-Wl,--gc-sections" "-Wl,--no-undefined")
+  if(DREAM_SELF_CONTAINED)
+    target_link_options(dream_llvm PRIVATE -static-libstdc++ -static-libgcc)
+  endif()
+  # The C file has no C++ in it; linked as C++, the C++ runtime LLVM needs is linked too.
+  set_target_properties(dream_llvm PROPERTIES LINKER_LANGUAGE CXX LINK_DEPENDS "${DREAM_LLVM_EXPORTS}")
+  target_link_libraries(dream_llvm PRIVATE ${DREAM_LLVM_LIBS} ${DREAM_LLVM_SYSLIBS})
+  install(TARGETS dream_llvm LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/dream/lib)
+endif()
